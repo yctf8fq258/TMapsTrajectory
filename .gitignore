@@ -1,0 +1,35 @@
+# ── 依赖与缓存（不入库）────────────────────────────────
+node_modules/
+.npm-cache/
+.chrome-profile/
+.chrome-harness/
+.shots/
+
+# ── 工具/编辑器工作区 ────────────────────────────────
+.workbuddy/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# ── 系统 ──────────────────────────────────────────
+Thumbs.db
+desktop.ini
+
+# ── 临时文件 ───────────────────────────────────────
+*.log
+*.tmp
+
+# ── 只留本地、不入库：调试与参考用的东西 ────────────────
+# 这些依赖本机环境（真实存档路径、试验台合成数据）或属于内部参考，
+# 与「插件能不能跑」无关，所以不随仓库发布。文件仍留在本地正常使用。
+tools/selftest.mjs
+tools/inspect-chat.mjs
+tools/harness.html
+tools/harness-fixture.js
+tools/win.ps1
+docs/计划书-世界舆图插件.md
+
+# ── 注意：dist/ 必须入库！─────────────────────────────
+# 「外链加载版」用 jsdelivr 直接读仓库里的
+#   dist/worldmap/index.single.js
+# 不提交 dist 的话，别人的酒馆就加载不到这个插件。

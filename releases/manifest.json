@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "name": "世界舆图",
+  "version": "0.1.0",
+  "ref": "main",
+  "runtime": "https://testingcf.jsdelivr.net/gh/yctf8fq258/TMapsTrajectory@main/dist/worldmap/index.single.js",
+  "manifest": "https://testingcf.jsdelivr.net/gh/yctf8fq258/TMapsTrajectory@main/releases/manifest.json",
+  "generatedAt": "2026-09-11T07:40:23.646Z",
+  "note": "把本仓库推到 GitHub 后，把 ref 改成发布用的 tag 或 commit，玩家侧脚本内容写 import('<runtime>') 即可。"
+}

@@ -1,0 +1,34 @@
+{
+  "name": "worldmap-trajectory",
+  "version": "0.1.0",
+  "private": true,
+  "description": "世界舆图 —— 基于酒馆助手(JS-Slash-Runner)的世界书坐标底图与玩家轨迹可视化插件",
+  "type": "module",
+  "keywords": [
+    "sillytavern",
+    "tavern-helper",
+    "js-slash-runner",
+    "tauritavern",
+    "map"
+  ],
+  "scripts": {
+    "dev": "node tools/dev-server.mjs",
+    "typecheck": "node tools/typecheck.mjs",
+    "selftest": "node tools/selftest.mjs",
+    "sanitize-test": "node tools/sanitize-test.mjs",
+    "release": "node tools/release.mjs",
+    "bundletest": "node tools/bundletest.mjs"
+  },
+  "devDependencies": {
+    "@types/jquery": "^4.0.1",
+    "@types/jqueryui": "^1.12.24",
+    "@types/lodash": "^4.17.25",
+    "@types/toastr": "^2.1.44",
+    "esbuild": "^0.28.2",
+    "type-fest": "^5.9.0",
+    "typescript": "^5.9.3",
+    "ws": "^8.18.3",
+    "yaml": "^2.9.0",
+    "zod": "^4.6.2"
+  }
+}

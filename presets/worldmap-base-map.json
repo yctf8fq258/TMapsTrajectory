@@ -1,0 +1,913 @@
+{
+  "schemaVersion": 2,
+  "name": "玄天界·内置骨架",
+  "updatedAt": "2026-09-11T07:40:23.692Z",
+  "nodes": [
+    {
+      "id": "n11e4yf5",
+      "name": "北冥雪原",
+      "path": "北冥雪原",
+      "parentId": null,
+      "depth": 0,
+      "xy": [
+        0,
+        -200
+      ],
+      "kind": "region",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "最北方，东西 3500 亿里、南北 2800 亿里"
+    },
+    {
+      "id": "n01ntx70",
+      "name": "东极青木域",
+      "path": "东极青木域",
+      "parentId": null,
+      "depth": 0,
+      "xy": [
+        200,
+        0
+      ],
+      "kind": "region",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "最东方，南北跨度 4500 亿里、东西纵深 3800 亿里"
+    },
+    {
+      "id": "n1jfeygd",
+      "name": "南离火洲",
+      "path": "南离火洲",
+      "parentId": null,
+      "depth": 0,
+      "xy": [
+        0,
+        200
+      ],
+      "kind": "region",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "最南方，东西 4000 亿里、南北 3000 亿里"
+    },
+    {
+      "id": "n0e7ooe5",
+      "name": "西漠佛国",
+      "path": "西漠佛国",
+      "parentId": null,
+      "depth": 0,
+      "xy": [
+        -200,
+        0
+      ],
+      "kind": "region",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "最西方，南北 3500 亿里、东西 2500 亿里"
+    },
+    {
+      "id": "n18uuqvt",
+      "name": "中央神州",
+      "path": "中央神州",
+      "parentId": null,
+      "depth": 0,
+      "xy": [
+        0,
+        0
+      ],
+      "kind": "region",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "玄天界地理中心，边长约 3000 亿里，神都洛阳居中"
+    },
+    {
+      "id": "n0nfm47i",
+      "name": "北冥黑渊",
+      "path": "北冥雪原·北冥黑渊",
+      "parentId": "n11e4yf5",
+      "depth": 1,
+      "xy": [
+        0,
+        -180
+      ],
+      "kind": "region",
+      "locked": false,
+      "source": "seed",
+      "status": "ok"
+    },
+    {
+      "id": "n1pog3ed",
+      "name": "广寒宫",
+      "path": "北冥雪原·广寒宫",
+      "parentId": "n11e4yf5",
+      "depth": 1,
+      "xy": [
+        0,
+        -180
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "雪原深处，向南 1500 亿里至绝迹冰谷边缘"
+    },
+    {
+      "id": "n13x35vm",
+      "name": "星辰塔",
+      "path": "北冥雪原·星辰塔",
+      "parentId": "n11e4yf5",
+      "depth": 1,
+      "xy": [
+        20,
+        -210
+      ],
+      "kind": "site",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "每三百年在上空浮现，九十九层"
+    },
+    {
+      "id": "n0q52pl8",
+      "name": "落凤坡",
+      "path": "东极青木域·落凤坡",
+      "parentId": "n01ntx70",
+      "depth": 1,
+      "xy": [
+        220,
+        60
+      ],
+      "kind": "region",
+      "locked": false,
+      "source": "seed",
+      "status": "ok"
+    },
+    {
+      "id": "n0nwx91r",
+      "name": "蓬莱仙岛",
+      "path": "东极青木域·蓬莱仙岛",
+      "parentId": "n01ntx70",
+      "depth": 1,
+      "xy": [
+        400,
+        0
+      ],
+      "kind": "site",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "每六十年在青木域极东出现一次"
+    },
+    {
+      "id": "n0sw5uw6",
+      "name": "青丘",
+      "path": "东极青木域·青丘",
+      "parentId": "n01ntx70",
+      "depth": 1,
+      "xy": [
+        260,
+        -30
+      ],
+      "kind": "region",
+      "locked": false,
+      "source": "seed",
+      "status": "ok"
+    },
+    {
+      "id": "n0muym0f",
+      "name": "万妖山脉",
+      "path": "东极青木域·万妖山脉",
+      "parentId": "n01ntx70",
+      "depth": 1,
+      "xy": [
+        140,
+        0
+      ],
+      "kind": "region",
+      "locked": false,
+      "source": "seed",
+      "status": "ok"
+    },
+    {
+      "id": "n0frqkse",
+      "name": "沂云森林",
+      "path": "东极青木域·沂云森林",
+      "parentId": "n01ntx70",
+      "depth": 1,
+      "xy": [
+        200,
+        -30
+      ],
+      "kind": "region",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "东部"
+    },
+    {
+      "id": "n0lkqhaw",
+      "name": "万魂殿",
+      "path": "南离火洲·万魂殿",
+      "parentId": "n1jfeygd",
+      "depth": 1,
+      "xy": [
+        -20,
+        190
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "阴风山脉万鬼窟"
+    },
+    {
+      "id": "n08v3m81",
+      "name": "万丈火山",
+      "path": "南离火洲·万丈火山",
+      "parentId": "n1jfeygd",
+      "depth": 1,
+      "xy": [
+        20,
+        200
+      ],
+      "kind": "region",
+      "locked": false,
+      "source": "seed",
+      "status": "ok"
+    },
+    {
+      "id": "n070qjrd",
+      "name": "血神宫",
+      "path": "南离火洲·血神宫",
+      "parentId": "n1jfeygd",
+      "depth": 1,
+      "xy": [
+        20,
+        180
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "距太阳神宫西南"
+    },
+    {
+      "id": "n1fwtjew",
+      "name": "葬仙坡",
+      "path": "南离火洲·葬仙坡",
+      "parentId": "n1jfeygd",
+      "depth": 1,
+      "xy": [
+        5,
+        160
+      ],
+      "kind": "region",
+      "locked": false,
+      "source": "seed",
+      "status": "ok"
+    },
+    {
+      "id": "n0b22t6n",
+      "name": "须弥山",
+      "path": "西漠佛国·须弥山",
+      "parentId": "n0e7ooe5",
+      "depth": 1,
+      "xy": [
+        -128,
+        0
+      ],
+      "kind": "region",
+      "locked": false,
+      "source": "seed",
+      "status": "ok"
+    },
+    {
+      "id": "n1lqsj6x",
+      "name": "百花坊",
+      "path": "中央神州·百花坊",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        25,
+        30
+      ],
+      "kind": "city",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "百花谷外的坊市，合欢宗明线"
+    },
+    {
+      "id": "n06cb8u5",
+      "name": "大周仙朝",
+      "path": "中央神州·大周仙朝",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        0,
+        0
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "核心统辖，主城神都洛阳"
+    },
+    {
+      "id": "n0x572of",
+      "name": "符韵门",
+      "path": "中央神州·符韵门",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        40,
+        0
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "云符山，距神都 600 亿里"
+    },
+    {
+      "id": "n1lhi1cj",
+      "name": "合欢宗",
+      "path": "中央神州·合欢宗",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        26,
+        31
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "明线距神都 400 亿里，位于百花谷"
+    },
+    {
+      "id": "n04g9mql",
+      "name": "黑金阁",
+      "path": "中央神州·黑金阁",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        5,
+        -5
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "暗市组织，中域"
+    },
+    {
+      "id": "n18vg2z3",
+      "name": "烬骨荒原",
+      "path": "中央神州·烬骨荒原",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        0,
+        100
+      ],
+      "kind": "region",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "南侧边界，3000 亿里长、宽 80 亿里"
+    },
+    {
+      "id": "n1dfwq03",
+      "name": "绝迹冰谷",
+      "path": "中央神州·绝迹冰谷",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        0,
+        -100
+      ],
+      "kind": "region",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "北侧边界，3000 亿里长、裂隙宽 35 亿里"
+    },
+    {
+      "id": "n1i0d0yy",
+      "name": "昆仑道门",
+      "path": "中央神州·昆仑道门",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        -66.67,
+        0
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "距神都向西 1000 亿里，昆仑神山"
+    },
+    {
+      "id": "n15kj28t",
+      "name": "灵墟宗",
+      "path": "中央神州·灵墟宗",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        84,
+        57
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "灵兽原，距万法宗 400 亿里"
+    },
+    {
+      "id": "n1fdnk47",
+      "name": "南梁古国",
+      "path": "中央神州·南梁古国",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        20,
+        37
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "洛阳以南 550 亿里，东临无尽海、西靠云梦大泽"
+    },
+    {
+      "id": "n1qfd2zq",
+      "name": "青玉宗",
+      "path": "中央神州·青玉宗",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        -90,
+        45
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "青音湖，距蜀山 500 亿里、距百花谷 200 亿里"
+    },
+    {
+      "id": "n1top1tu",
+      "name": "蜀山剑门",
+      "path": "中央神州·蜀山剑门",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        -46.67,
+        0
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "距神都向西 700 亿里"
+    },
+    {
+      "id": "n1oeruio",
+      "name": "叹息沙海",
+      "path": "中央神州·叹息沙海",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        -100,
+        0
+      ],
+      "kind": "region",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "西侧边界，3000 亿里长、宽 120 亿里"
+    },
+    {
+      "id": "n07u13xq",
+      "name": "天机阁",
+      "path": "中央神州·天机阁",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        -2,
+        -2
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "推演天机，中域"
+    },
+    {
+      "id": "n0s2u86c",
+      "name": "万宝楼",
+      "path": "中央神州·万宝楼",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        3,
+        -3
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "商号组织，中域"
+    },
+    {
+      "id": "n1u8vmz1",
+      "name": "万法宗",
+      "path": "中央神州·万法宗",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        56.57,
+        56.57
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "万法天仪仙城，距神都 1200 亿里"
+    },
+    {
+      "id": "n1h2c2nd",
+      "name": "无尽山脉",
+      "path": "中央神州·无尽山脉",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        100,
+        0
+      ],
+      "kind": "region",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "东侧边界，南北走向 3000 亿里、宽 300 亿里"
+    },
+    {
+      "id": "n1f3z41b",
+      "name": "星道宗",
+      "path": "中央神州·星道宗",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        0,
+        -40
+      ],
+      "kind": "power",
+      "altitude": 3000000000,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "云符山正上方 30 亿里高空的摘星悬岛"
+    },
+    {
+      "id": "n16q8zcy",
+      "name": "湮丹宗",
+      "path": "中央神州·湮丹宗",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        53.33,
+        0
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "杏临谷，距神都 800 亿里"
+    },
+    {
+      "id": "n0f4a2yr",
+      "name": "斩仙盟",
+      "path": "中央神州·斩仙盟",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        2,
+        6
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "中域同盟"
+    },
+    {
+      "id": "n1fbrrnb",
+      "name": "阵天宗",
+      "path": "中央神州·阵天宗",
+      "parentId": "n18uuqvt",
+      "depth": 1,
+      "xy": [
+        14,
+        14
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "距神都 300 亿里，位于千阵岭"
+    },
+    {
+      "id": "n0s59r1p",
+      "name": "水晶龙宫",
+      "path": "北冥雪原·北冥黑渊·水晶龙宫",
+      "parentId": "n0nfm47i",
+      "depth": 2,
+      "xy": [
+        0,
+        -180
+      ],
+      "kind": "power",
+      "altitude": -6666667,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "广寒宫正下方地底一千万里，蛟龙一族"
+    },
+    {
+      "id": "n1tzzkrn",
+      "name": "五色孔雀族",
+      "path": "东极青木域·落凤坡·五色孔雀族",
+      "parentId": "n0q52pl8",
+      "depth": 2,
+      "xy": [
+        220,
+        60
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "南部"
+    },
+    {
+      "id": "n1n6z08i",
+      "name": "九尾天狐族",
+      "path": "东极青木域·青丘·九尾天狐族",
+      "parentId": "n0sw5uw6",
+      "depth": 2,
+      "xy": [
+        260,
+        -30
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "向东 1200 亿里至青丘"
+    },
+    {
+      "id": "n1uyc2cu",
+      "name": "神猿族",
+      "path": "东极青木域·万妖山脉·神猿族",
+      "parentId": "n0muym0f",
+      "depth": 2,
+      "xy": [
+        140,
+        0
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "向西跨 300 亿里无尽山脉至中州"
+    },
+    {
+      "id": "n0ard9fz",
+      "name": "太阳神宫",
+      "path": "南离火洲·万丈火山·太阳神宫",
+      "parentId": "n08v3m81",
+      "depth": 2,
+      "xy": [
+        20,
+        200
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "火山区域核心统辖"
+    },
+    {
+      "id": "n0m0uzwj",
+      "name": "尸魔宗",
+      "path": "南离火洲·葬仙坡·尸魔宗",
+      "parentId": "n1fwtjew",
+      "depth": 2,
+      "xy": [
+        5,
+        160
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "烬骨荒原南侧边缘，向南 200 亿里为血海"
+    },
+    {
+      "id": "n1k3zor1",
+      "name": "大雷音寺",
+      "path": "西漠佛国·须弥山·大雷音寺",
+      "parentId": "n0b22t6n",
+      "depth": 2,
+      "xy": [
+        -128,
+        0
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "距神都 1920 亿里，向东 300 亿里入叹息沙海"
+    },
+    {
+      "id": "n0g51l88",
+      "name": "神都",
+      "path": "中央神州·大周仙朝·神都",
+      "parentId": "n06cb8u5",
+      "depth": 2,
+      "xy": [
+        0,
+        0
+      ],
+      "kind": "city",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "大周仙朝都城，太初山上的仙都"
+    },
+    {
+      "id": "n0atvvqo",
+      "name": "宫城区",
+      "path": "中央神州·大周仙朝·神都·宫城区",
+      "parentId": "n0g51l88",
+      "depth": 3,
+      "xy": [
+        0,
+        0
+      ],
+      "kind": "city",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "太初山顶，皇城与镇魔司"
+    },
+    {
+      "id": "n1sd9sg9",
+      "name": "环墟",
+      "path": "中央神州·大周仙朝·神都·环墟",
+      "parentId": "n0g51l88",
+      "depth": 3,
+      "xy": [
+        2.4,
+        2.9
+      ],
+      "kind": "city",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "城墙外的环墟"
+    },
+    {
+      "id": "n1jl7ybs",
+      "name": "六坊",
+      "path": "中央神州·大周仙朝·神都·六坊",
+      "parentId": "n0g51l88",
+      "depth": 3,
+      "xy": [
+        1.4,
+        2
+      ],
+      "kind": "city",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "城墙内外的六坊"
+    },
+    {
+      "id": "n01hxbzy",
+      "name": "四区",
+      "path": "中央神州·大周仙朝·神都·四区",
+      "parentId": "n0g51l88",
+      "depth": 3,
+      "xy": [
+        0.6,
+        1.1
+      ],
+      "kind": "city",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "山腰与内城四区"
+    },
+    {
+      "id": "n1fhypdp",
+      "name": "慈宁宫",
+      "path": "中央神州·大周仙朝·神都·宫城区·慈宁宫",
+      "parentId": "n0atvvqo",
+      "depth": 4,
+      "xy": [
+        0.9,
+        0.35
+      ],
+      "kind": "site",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "圣德太后寝宫"
+    },
+    {
+      "id": "n0utaeqe",
+      "name": "长乐坊",
+      "path": "中央神州·大周仙朝·神都·宫城区·长乐坊",
+      "parentId": "n0atvvqo",
+      "depth": 4,
+      "xy": [
+        -0.6,
+        0.6
+      ],
+      "kind": "site",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "宫外坊市"
+    },
+    {
+      "id": "n065i0v0",
+      "name": "镇魔司",
+      "path": "中央神州·大周仙朝·神都·宫城区·镇魔司",
+      "parentId": "n0atvvqo",
+      "depth": 4,
+      "xy": [
+        1.2,
+        -0.3
+      ],
+      "kind": "power",
+      "altitude": 0,
+      "locked": true,
+      "source": "seed",
+      "status": "ok",
+      "note": "北镇抚司档房"
+    }
+  ],
+  "hiddenIds": [],
+  "authorNote": "只有世界书里写死了方位与距离的地点才在这里；其余交给「设置 → 生成：世界骨架」或人工拖动。"
+}

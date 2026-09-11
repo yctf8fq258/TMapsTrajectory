@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["jquery", "jqueryui", "lodash", "toastr", "type-fest", "yaml", "zod"],
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+    "allowUmdGlobalAccess": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+    "noEmit": true,
+    "sourceMap": true,
+    "paths": {
+      "@/*": ["./src/worldmap/*"]
+    },
+    "baseUrl": "."
+  },
+  "include": ["@types", "src", "tools/*.d.ts"],
+  "exclude": ["**/node_modules/**", "**/dist/**"]
+}
