@@ -347,11 +347,12 @@ export function mergeAiLayout(graph, nodes) {
     }
     return result;
 }
-/** 调一次模型（OpenAI 兼容端点，不经过酒馆正文管道） */
+/** 调一次模型（OpenAI 兼容端点，不经过酒馆正文管道）；网络层失败自动重试一次 */
 export async function requestLayout(settings, prompt) {
-    const base = settings.api.url.replace(/\/+$/, '');
+    // 接口地址必须 trim：粘贴时带上的空格/换行会拼出非法 URL，fetch 直接 Failed to fetch
+    const base = settings.api.url.trim().replace(/\/+$/, '');
     const endpoint = /\/chat\/completions$/.test(base) ? base : `${base}/chat/completions`;
-    const response = await fetch(endpoint, {
+    const doFetch = async () => fetch(endpoint, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -368,6 +369,22 @@ export async function requestLayout(settings, prompt) {
             stream: false,
         }),
     });
+    let response;
+    try {
+        response = await doFetch();
+    }
+    catch (firstError) {
+        // Failed to fetch = 请求没送达（网络抖动/代理抽风/DNS），不是截断：歇 1 秒重试一次
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        try {
+            response = await doFetch();
+        }
+        catch {
+            throw new Error(`连不上模型接口（${endpoint}）：网络层失败且重试仍失败。` +
+                `先点「测试连接」排查：通了就是临时抖动再点一次整理；不通就检查接口地址、代理/VPN 和网络。` +
+                `（原始错误：${String(firstError instanceof Error ? firstError.message : firstError)}）`);
+        }
+    }
     if (!response.ok) {
         const body = await response.text().catch(() => '');
         throw new Error(`模型接口返回 ${response.status}：${body.slice(0, 300)}`);
