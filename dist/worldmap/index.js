@@ -617,7 +617,7 @@ const actions = {
         refreshTrail();
         toast('info', `已删除 ${doomed.size} 个节点`);
     },
-    onAddChild(id, name) {
+    onAddChild(id, name, at) {
         pushUndo();
         const parent = id ? graph.get(id) : null;
         const node = graph.ensurePath([...(parent ? parent.path.split('·') : []), name], 'manual');
@@ -625,13 +625,18 @@ const actions = {
             node.locked = true;
             node.source = 'manual';
             node.status = 'ok';
-            if (parent) {
+            if (at) {
+                // 显式给了落点（在视图中心新增）：直接用，不再贴着父节点
+                node.xy = [at[0], at[1]];
+            }
+            else if (parent) {
                 const cell = graph.cellRadius(parent);
                 node.xy = [parent.xy[0] + cell * 0.32, parent.xy[1] + cell * 0.32];
             }
             selectedId = node.id;
         }
         persistBaseMap();
+        persistTrail();
         render();
     },
     /** 编辑模式下在画布空白处右键/双击：就地新建一个地点 */
@@ -1180,7 +1185,7 @@ async function init() {
     }, defaultView(graph));
     const windowActions = {
         ...actions,
-        onAddChild: (id, name) => actions.onAddChild(id, name),
+        onAddChild: (id, name, at) => actions.onAddChild(id, name, at),
         onSaveSettings: (patch) => actions.onSaveSettings(patch),
     };
     mapWindow = new MapWindow(hostDocument, {

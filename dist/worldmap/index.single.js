@@ -3601,8 +3601,14 @@ class MapCanvas {
     childCount = new Map();
     /** 编辑模式下的框选集合（多选的节点 id）；Shift+拖空白框选，抓住其中一点整组移动 */
     multi = new Set();
+    /** 框选模式开关：开着时空白处拖动一律是框选（不用按 Shift） */
+    boxSelectMode = false;
     /** 框选橡皮筋矩形（svg 本地屏幕坐标） */
     rubber = null;
+    /** 框选模式开关 */
+    setBoxSelect(value) {
+        this.boxSelectMode = value;
+    }
     /** 顶部中间的坐标条：显示当前选中点的名称 + 坐标（没选中就藏起来） */
     hud;
     constructor(wrap, hooks, view) {
@@ -4115,16 +4121,16 @@ class MapCanvas {
             });
             halo.setAttribute('stroke-width', String(1.4 / Math.max(0.3, this.scale)));
             group.appendChild(halo);
-            // 框选多选的高亮环（虚线金圈）
+            // 框选多选的高亮环（加粗亮金圈，一眼能看清选了谁）
             if (this.multi.has(node.id)) {
                 group.appendChild(el('circle', {
                     cx: pos[0],
                     cy: pos[1],
-                    r: radius * 1.75,
-                    fill: 'none',
-                    stroke: '#d9c08c',
-                    'stroke-width': 1.6 / Math.max(0.3, this.scale),
-                    'stroke-dasharray': `${4 / Math.max(0.3, this.scale)} ${3 / Math.max(0.3, this.scale)}`,
+                    r: radius * 2,
+                    fill: 'rgba(236,217,171,.14)',
+                    stroke: '#ecd9ab',
+                    'stroke-width': 2.2 / Math.max(0.3, this.scale),
+                    'stroke-dasharray': `${5 / Math.max(0.3, this.scale)} ${3 / Math.max(0.3, this.scale)}`,
                 }));
             }
             group.appendChild(el('circle', { cx: pos[0], cy: pos[1], r: radius * 0.72, fill: color }));
@@ -4353,8 +4359,8 @@ class MapCanvas {
             const shift = event.shiftKey;
             const node = this.hitTest(event.clientX, event.clientY);
             if (this.view.editMode) {
-                // Shift + 空白处拖动 = 框选
-                if (shift && !node) {
+                // 框选模式开着（或按住 Shift）+ 空白处拖动 = 框选
+                if ((shift || this.boxSelectMode) && !node) {
                     this.drag = {
                         mode: 'rubber',
                         startX: event.clientX,
@@ -4771,7 +4777,10 @@ class MapWindow {
         // ── 编辑 ──
         const edit = this.panes.get('edit');
         edit.innerHTML = `
-      <div class="dym-switches"><label><input type="checkbox" data-role="edit-mode"><span>编辑模式（拖动节点改位置）</span><span class="dym-track" aria-hidden="true"></span></label></div>
+      <div class="dym-switches">
+        <label><input type="checkbox" data-role="edit-mode"><span>编辑模式（拖动节点改位置）</span><span class="dym-track" aria-hidden="true"></span></label>
+        <label><input type="checkbox" data-role="box-select"><span>框选模式（空白处拖动框选多点，Shift 点单点加减）</span><span class="dym-track" aria-hidden="true"></span></label>
+      </div>
       <div class="dym-row">
         <button class="dym-btn" data-act="undo">撤销</button>
         <button class="dym-btn" data-act="redo">重做</button>
@@ -4816,6 +4825,9 @@ class MapWindow {
         edit.querySelector('[data-role=edit-mode]')?.addEventListener('change', event => {
             this.actions.onSetEditMode(event.target.checked);
         });
+        edit.querySelector('[data-role=box-select]')?.addEventListener('change', event => {
+            this.data.canvas.setBoxSelect(event.target.checked);
+        });
         edit.querySelector('[data-act=undo]')?.addEventListener('click', () => this.actions.onUndo());
         edit.querySelector('[data-act=redo]')?.addEventListener('click', () => this.actions.onRedo());
         const applyXy = () => {
@@ -4846,7 +4858,13 @@ class MapWindow {
         });
         edit.querySelector('[data-act=add-free]')?.addEventListener('click', () => {
             const name = childName() || '新地点';
-            this.actions.onAddChild(this.data.focusId ?? this.data.selectedId, name);
+            // 真按「当前画面中心」的世界坐标落点 —— 之前落在父节点旁边，用户根本找不到新生成的点
+            const size = this.data.canvas.size();
+            const center = this.data.canvas.screenToWorld(size.w / 2, size.h / 2);
+            this.actions.onAddChild(this.data.focusId ?? this.data.selectedId, name, [
+                Math.round(center[0] * 100) / 100,
+                Math.round(center[1] * 100) / 100,
+            ]);
         });
         edit.querySelector('[data-act=toggle-lock]')?.addEventListener('click', () => this.data.selectedId && this.actions.onToggleLock(this.data.selectedId));
         // 删除用两步确认，避免在隐藏 iframe 里弹 confirm 对话框
@@ -6481,7 +6499,7 @@ const actions = {
         refreshTrail();
         toast('info', `已删除 ${doomed.size} 个节点`);
     },
-    onAddChild(id, name) {
+    onAddChild(id, name, at) {
         pushUndo();
         const parent = id ? graph.get(id) : null;
         const node = graph.ensurePath([...(parent ? parent.path.split('·') : []), name], 'manual');
@@ -6489,13 +6507,18 @@ const actions = {
             node.locked = true;
             node.source = 'manual';
             node.status = 'ok';
-            if (parent) {
+            if (at) {
+                // 显式给了落点（在视图中心新增）：直接用，不再贴着父节点
+                node.xy = [at[0], at[1]];
+            }
+            else if (parent) {
                 const cell = graph.cellRadius(parent);
                 node.xy = [parent.xy[0] + cell * 0.32, parent.xy[1] + cell * 0.32];
             }
             selectedId = node.id;
         }
         persistBaseMap();
+        persistTrail();
         render();
     },
     /** 编辑模式下在画布空白处右键/双击：就地新建一个地点 */
@@ -7044,7 +7067,7 @@ async function init() {
     }, defaultView(graph));
     const windowActions = {
         ...actions,
-        onAddChild: (id, name) => actions.onAddChild(id, name),
+        onAddChild: (id, name, at) => actions.onAddChild(id, name, at),
         onSaveSettings: (patch) => actions.onSaveSettings(patch),
     };
     mapWindow = new MapWindow(hostDocument, {

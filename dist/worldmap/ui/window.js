@@ -198,7 +198,10 @@ export class MapWindow {
         // ── 编辑 ──
         const edit = this.panes.get('edit');
         edit.innerHTML = `
-      <div class="dym-switches"><label><input type="checkbox" data-role="edit-mode"><span>编辑模式（拖动节点改位置）</span><span class="dym-track" aria-hidden="true"></span></label></div>
+      <div class="dym-switches">
+        <label><input type="checkbox" data-role="edit-mode"><span>编辑模式（拖动节点改位置）</span><span class="dym-track" aria-hidden="true"></span></label>
+        <label><input type="checkbox" data-role="box-select"><span>框选模式（空白处拖动框选多点，Shift 点单点加减）</span><span class="dym-track" aria-hidden="true"></span></label>
+      </div>
       <div class="dym-row">
         <button class="dym-btn" data-act="undo">撤销</button>
         <button class="dym-btn" data-act="redo">重做</button>
@@ -243,6 +246,9 @@ export class MapWindow {
         edit.querySelector('[data-role=edit-mode]')?.addEventListener('change', event => {
             this.actions.onSetEditMode(event.target.checked);
         });
+        edit.querySelector('[data-role=box-select]')?.addEventListener('change', event => {
+            this.data.canvas.setBoxSelect(event.target.checked);
+        });
         edit.querySelector('[data-act=undo]')?.addEventListener('click', () => this.actions.onUndo());
         edit.querySelector('[data-act=redo]')?.addEventListener('click', () => this.actions.onRedo());
         const applyXy = () => {
@@ -273,7 +279,13 @@ export class MapWindow {
         });
         edit.querySelector('[data-act=add-free]')?.addEventListener('click', () => {
             const name = childName() || '新地点';
-            this.actions.onAddChild(this.data.focusId ?? this.data.selectedId, name);
+            // 真按「当前画面中心」的世界坐标落点 —— 之前落在父节点旁边，用户根本找不到新生成的点
+            const size = this.data.canvas.size();
+            const center = this.data.canvas.screenToWorld(size.w / 2, size.h / 2);
+            this.actions.onAddChild(this.data.focusId ?? this.data.selectedId, name, [
+                Math.round(center[0] * 100) / 100,
+                Math.round(center[1] * 100) / 100,
+            ]);
         });
         edit.querySelector('[data-act=toggle-lock]')?.addEventListener('click', () => this.data.selectedId && this.actions.onToggleLock(this.data.selectedId));
         // 删除用两步确认，避免在隐藏 iframe 里弹 confirm 对话框

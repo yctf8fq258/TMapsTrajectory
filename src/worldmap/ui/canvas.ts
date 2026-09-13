@@ -138,8 +138,15 @@ export class MapCanvas {
   private childCount = new Map<string, number>();
   /** 编辑模式下的框选集合（多选的节点 id）；Shift+拖空白框选，抓住其中一点整组移动 */
   private multi = new Set<string>();
+  /** 框选模式开关：开着时空白处拖动一律是框选（不用按 Shift） */
+  private boxSelectMode = false;
   /** 框选橡皮筋矩形（svg 本地屏幕坐标） */
   private rubber: { x0: number; y0: number; x1: number; y1: number } | null = null;
+
+  /** 框选模式开关 */
+  setBoxSelect(value: boolean): void {
+    this.boxSelectMode = value;
+  }
   /** 顶部中间的坐标条：显示当前选中点的名称 + 坐标（没选中就藏起来） */
   private hud: HTMLDivElement;
 
@@ -656,17 +663,17 @@ export class MapCanvas {
       });
       halo.setAttribute('stroke-width', String(1.4 / Math.max(0.3, this.scale)));
       group.appendChild(halo);
-      // 框选多选的高亮环（虚线金圈）
+      // 框选多选的高亮环（加粗亮金圈，一眼能看清选了谁）
       if (this.multi.has(node.id)) {
         group.appendChild(
           el('circle', {
             cx: pos[0],
             cy: pos[1],
-            r: radius * 1.75,
-            fill: 'none',
-            stroke: '#d9c08c',
-            'stroke-width': 1.6 / Math.max(0.3, this.scale),
-            'stroke-dasharray': `${4 / Math.max(0.3, this.scale)} ${3 / Math.max(0.3, this.scale)}`,
+            r: radius * 2,
+            fill: 'rgba(236,217,171,.14)',
+            stroke: '#ecd9ab',
+            'stroke-width': 2.2 / Math.max(0.3, this.scale),
+            'stroke-dasharray': `${5 / Math.max(0.3, this.scale)} ${3 / Math.max(0.3, this.scale)}`,
           }),
         );
       }
@@ -905,8 +912,8 @@ export class MapCanvas {
       const shift = event.shiftKey;
       const node = this.hitTest(event.clientX, event.clientY);
       if (this.view.editMode) {
-        // Shift + 空白处拖动 = 框选
-        if (shift && !node) {
+        // 框选模式开着（或按住 Shift）+ 空白处拖动 = 框选
+        if ((shift || this.boxSelectMode) && !node) {
           this.drag = {
             mode: 'rubber',
             startX: event.clientX,
