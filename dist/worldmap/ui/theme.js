@@ -291,6 +291,13 @@ export const CSS = `
   background: rgba(255,255,255,.07); border-radius: 4px; padding: 1px 5px; color: var(--dym-accent-strong);
 }
 .dym-sect { font-size: 11.5px; color: var(--dym-faint); letter-spacing: .08em; margin: 14px 0 6px; }
+/* AI 功能标记：用了模型的小金标 */
+.dym-ai {
+  display: inline-flex; align-items: center; margin-left: 7px; padding: 0 5px;
+  border-radius: 5px; font-size: 9.5px; font-weight: 700; letter-spacing: .08em; line-height: 16px;
+  color: #2c2113; background: linear-gradient(180deg, #e6d1a2, #d2b678);
+}
+.dym-sec > summary .dym-ai { margin-left: 8px; }
 
 /* 设置页：分块折叠，一叠深色卡片 */
 .dym-sec {
@@ -339,6 +346,7 @@ export const CSS = `
   font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 11.5px; line-height: 1.6;
   background: var(--dym-field); border: 1px solid var(--dym-line); color: #d5cec0; white-space: pre-wrap;
 }
+.dym-api-result:empty { display: none; }
 /* 分组卡片：设置页折叠块之外，普通控件分组也用它（编辑页等） */
 .dym-card {
   background: var(--dym-card); border: 1px solid var(--dym-line); border-radius: var(--dym-radius);

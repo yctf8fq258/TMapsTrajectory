@@ -350,7 +350,7 @@ async function runGeoSync(manual) {
         const failed = report.status === 'refused' || report.status === 'failed' || report.status === 'missing-api';
         if (manual) {
             toast(failed ? 'warning' : 'success', `坐标世界书：${report.message}`);
-            mapWindow?.showReport(`【坐标世界书同步】${report.status}\n${report.message}\n条目数：${report.entryCount}\n挂载状态：${describeGeoMount()}`, failed ? '同步被拒或缺接口，详见上方报告。' : '同步完成；挂载后正文提到地名才会注入对应坐标条目。');
+            mapWindow?.showGeoResult(`【坐标世界书同步】${report.status}\n${report.message}\n条目数：${report.entryCount}\n挂载状态：${describeGeoMount()}`);
         }
         else {
             window.console.info('[世界舆图] 坐标世界书自动同步：', report.message);
@@ -361,7 +361,7 @@ async function runGeoSync(manual) {
         geoStatus = `${describeGeoMount()}｜同步失败`;
         if (manual) {
             toast('error', `同步坐标世界书失败：${message}`);
-            mapWindow?.showReport(`【坐标世界书同步】失败\n${message}\n`, `同步失败：${message}`);
+            mapWindow?.showGeoResult(`【坐标世界书同步】失败\n${message}\n`);
         }
         else {
             window.console.warn('[世界舆图] 坐标世界书自动同步失败', error);
@@ -809,18 +809,16 @@ const actions = {
                 await attachCoordBook();
             geoStatus = `${describeGeoMount()}｜${report.message}`;
             toast('success', `坐标世界书已就绪并挂载（${report.entryCount} 条）`);
-            mapWindow?.showReport(`【挂载坐标世界书】完成\n${report.message}\n挂载状态：${describeGeoMount()}\n\n` +
+            mapWindow?.showGeoResult(`【挂载坐标世界书】完成\n${report.message}\n挂载状态：${describeGeoMount()}\n\n` +
                 '· 绿灯条目：正文提到地名才注入该地坐标（不提不花 token）\n' +
                 '· 每回合另有「地理态势」注入（本页可关）\n' +
-                '· 之后拖动/生成底图会自动同步进世界书（单向：底图 → 世界书）', '挂载完成；世界书侧手改的坐标会在下次同步被底图覆盖。');
+                '· 之后拖动/生成底图会自动同步进世界书（单向：底图 → 世界书）');
         }
         catch (error) {
             const message = String(error instanceof Error ? error.message : error);
             geoStatus = `${describeGeoMount()}｜挂载失败`;
             toast('error', `挂载坐标世界书失败：${message}`);
-            mapWindow?.showReport(`【挂载坐标世界书】失败\n${message}\n`, `挂载失败：${message}`);
-        }
-        finally {
+            mapWindow?.showGeoResult(`【挂载坐标世界书】失败\n${message}\n`);
             busy = null;
             render();
         }
@@ -841,16 +839,14 @@ const actions = {
             await attachCoordBook();
             geoStatus = `${describeGeoMount()}｜${wasMounted ? '绑定已重写并校验通过' : '已补挂'}`;
             toast('success', wasMounted ? '挂载状态已修复（绑定重写并读回校验）' : '已重新挂载坐标世界书');
-            mapWindow?.showReport(`【修复挂载】完成\n${wasMounted ? '原绑定已存在，已重写并读回校验' : '此前未挂载，现已补挂'}\n` +
-                `挂载状态：${describeGeoMount()}\n`, '修复完成；下一回合生成时坐标条目即可被扫描到。');
+            mapWindow?.showGeoResult(`【修复挂载】完成\n${wasMounted ? '原绑定已存在，已重写并读回校验' : '此前未挂载，现已补挂'}\n` +
+                `挂载状态：${describeGeoMount()}\n`);
         }
         catch (error) {
             const message = String(error instanceof Error ? error.message : error);
             geoStatus = `${describeGeoMount()}｜修复挂载失败`;
             toast('error', `修复挂载失败：${message}`);
-            mapWindow?.showReport(`【修复挂载】失败\n${message}\n`, `修复失败：${message}`);
-        }
-        finally {
+            mapWindow?.showGeoResult(`【修复挂载】失败\n${message}\n`);
             busy = null;
             render();
         }
@@ -877,14 +873,12 @@ const actions = {
             const message = await deleteCoordBook();
             geoStatus = describeGeoMount();
             toast('success', message);
-            mapWindow?.showReport(`【删除坐标世界书】${message}\n`, message);
+            mapWindow?.showGeoResult(`【删除坐标世界书】${message}\n`);
         }
         catch (error) {
             const message = String(error instanceof Error ? error.message : error);
             toast('error', `删除失败：${message}`);
-            mapWindow?.showReport(`【删除坐标世界书】失败\n${message}\n`, `删除失败：${message}`);
-        }
-        finally {
+            mapWindow?.showGeoResult(`【删除坐标世界书】失败\n${message}\n`);
             busy = null;
             render();
         }
@@ -934,16 +928,16 @@ const actions = {
             persistTrail();
             refreshTrail();
             toast('success', `已整理 ${fixes.length}/${raws.length} 条地点串，轨迹已重建`);
-            mapWindow?.showReport(`【AI 整理本会话地点】完成\n输入 ${raws.length} 条，整理出 ${fixes.length} 条：\n` +
+            mapWindow?.showTrailResult(`【AI 整理本会话地点】完成\n输入 ${raws.length} 条，整理出 ${fixes.length} 条：\n` +
                 fixes
                     .map(fix => `  · ${fix.raw}\n    → ${fix.path}${Number.isFinite(fix.x) ? ` (${fix.x}, ${fix.y})` : ''}`)
                     .join('\n') +
-                '\n\n整理结果已存进本会话的轨迹数据，之后每次重算都会套用；新的脏写法出现后再点一次即可。', '轨迹已按整理结果重建；没整理到的条目仍走脚本解析。');
+                '\n\n整理结果已存进本会话的轨迹数据，之后每次重算都会套用；新的脏写法出现后再点一次即可。');
         }
         catch (error) {
             const message = String(error instanceof Error ? error.message : error);
             toast('error', `整理失败：${message}`);
-            mapWindow?.showReport(`【AI 整理本会话地点】失败\n${message}\n`, `整理失败：${message}`);
+            mapWindow?.showTrailResult(`【AI 整理本会话地点】失败\n${message}\n`);
         }
         finally {
             busy = null;

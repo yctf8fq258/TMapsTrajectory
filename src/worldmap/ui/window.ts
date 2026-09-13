@@ -387,8 +387,9 @@ export class MapWindow {
         <button class="dym-btn" data-act="clear-hidden">恢复全部显示</button>
       </div>
       <div class="dym-row">
-        <button class="dym-btn dym-primary" data-act="ai-fix-history">AI 整理本会话地点</button>
+        <button class="dym-btn dym-primary" data-act="ai-fix-history">AI 整理本会话地点<span class="dym-ai">AI</span></button>
       </div>
+      <div class="dym-api-result" data-role="trail-result"></div>
       <div class="dym-hint">聊天中途才装插件、或 AI 写的地点串太脏（混描述/时刻/拼层级）？点它把本会话出现过的
         原始地点串发给模型规范化成干净路径，玩出来的非设定地点顺带按方位给相对坐标。
         从头开始玩的新档不需要；整理结果存在本会话的轨迹数据里，重算时自动套用。</div>
@@ -401,7 +402,7 @@ export class MapWindow {
     // ── 设置 ──
     const settings = this.panes.get('settings') as HTMLElement;
     settings.innerHTML = `
-      <details class="dym-sec" open><summary>地图布局 AI（接口与模型）</summary>
+      <details class="dym-sec"><summary>地图布局 AI（接口与模型）</summary>
         <div class="dym-hint">读世界书的地点条目、一次性给出坐标。与正文用的模型分开配置，默认沿用 MVU 的本地端点。</div>
         <div class="dym-field"><label>接口</label><input type="text" data-set="url" placeholder="http://localhost:1234/v1"></div>
         <div class="dym-field"><label>密钥</label>
@@ -427,7 +428,7 @@ export class MapWindow {
         <div class="dym-row"><button class="dym-btn dym-primary" data-act="save-settings">保存设置</button></div>
       </details>
 
-      <details class="dym-sec"><summary>生成底图（按世界书铺点）</summary>
+      <details class="dym-sec"><summary>生成底图（按世界书铺点）<span class="dym-ai">AI</span></summary>
         <div class="dym-hint">
           读世界书里的<b>地点类条目</b>（《玄天界介绍》《地点：X》这类总纲），一次性给出大域、主要势力、
           主要城池的坐标；已经人工拖过的点会跳过，不会覆盖。<br>
@@ -440,7 +441,7 @@ export class MapWindow {
         </div>
         <div class="dym-hint">改完记得点「保存设置」再生成。示例见 <code>docs/底图补充.txt</code>；
           相对线索的写法：<code>距某地N</code>、<code>向某方向N到某地</code>、<code>正上/正下方</code>、<code>宽N</code>。</div>
-        <div class="dym-row"><button class="dym-btn dym-primary" data-act="layout-world">生成底图</button></div>
+        <div class="dym-row"><button class="dym-btn dym-primary" data-act="layout-world">生成底图<span class="dym-ai">AI</span></button></div>
         <div class="dym-hint">生成结果（用了哪些条目、新增/移动/丢弃多少、模型原始回复）会显示在下面这块，同时抄一份到「导出 / 导入」的文本框里方便留存。</div>
         <div class="dym-report" data-role="layout-report">还没跑过地图布局 AI。</div>
         <div class="dym-row"><button class="dym-btn dym-danger" data-act="clear-nodes">清空地图上所有地点</button></div>
@@ -485,6 +486,7 @@ export class MapWindow {
           <button class="dym-btn dym-primary" data-act="geo-mount">生成并挂载坐标世界书</button>
           <button class="dym-btn" data-act="geo-sync">立即同步</button>
         </div>
+        <div class="dym-api-result" data-role="geo-result"></div>
         <div class="dym-hint">「立即同步」= 按当前底图与设置**整体重写**《世界舆图·坐标表》：
           蓝灯的总纲/移动规则/叙事规则 3 条 + 当前已确认的地点条目（待定位的虚线圈本来就不进书）。
           切换会话后条目数量变化，多半是新会话的轨迹产生了新地点 —— 想清掉旧档地名就点下面的清理按钮。</div>
@@ -670,12 +672,22 @@ export class MapWindow {
   }
 
   /** 轻操作（获取模型/测试连接）的就地结果：写在按钮下面的小结果条里，不滚动、不跳页签 */
-  showApiResult(text: string): void {
-    const box = this.ioPane().querySelector('[data-role=api-result]') as HTMLElement | null;
+  showApiResult(text: string, role = 'api-result'): void {
+    const box = this.ioPane().querySelector(`[data-role=${role}]`) as HTMLElement | null;
     if (box) {
       box.textContent = text;
       box.scrollTop = 0;
     }
+  }
+
+  /** 坐标世界书操作（挂载/同步/修复/删除）的就地结果：显示在本节按钮下方 */
+  showGeoResult(text: string): void {
+    this.showApiResult(text, 'geo-result');
+  }
+
+  /** AI 整理本会话地点的就地结果：显示在轨迹页按钮下方 */
+  showTrailResult(text: string): void {
+    this.showApiResult(text, 'trail-result');
   }
 
   private async copyIo(): Promise<void> {

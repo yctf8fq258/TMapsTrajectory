@@ -3189,6 +3189,13 @@ const CSS = `
   background: rgba(255,255,255,.07); border-radius: 4px; padding: 1px 5px; color: var(--dym-accent-strong);
 }
 .dym-sect { font-size: 11.5px; color: var(--dym-faint); letter-spacing: .08em; margin: 14px 0 6px; }
+/* AI 功能标记：用了模型的小金标 */
+.dym-ai {
+  display: inline-flex; align-items: center; margin-left: 7px; padding: 0 5px;
+  border-radius: 5px; font-size: 9.5px; font-weight: 700; letter-spacing: .08em; line-height: 16px;
+  color: #2c2113; background: linear-gradient(180deg, #e6d1a2, #d2b678);
+}
+.dym-sec > summary .dym-ai { margin-left: 8px; }
 
 /* 设置页：分块折叠，一叠深色卡片 */
 .dym-sec {
@@ -3237,6 +3244,7 @@ const CSS = `
   font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 11.5px; line-height: 1.6;
   background: var(--dym-field); border: 1px solid var(--dym-line); color: #d5cec0; white-space: pre-wrap;
 }
+.dym-api-result:empty { display: none; }
 /* 分组卡片：设置页折叠块之外，普通控件分组也用它（编辑页等） */
 .dym-card {
   background: var(--dym-card); border: 1px solid var(--dym-line); border-radius: var(--dym-radius);
@@ -3612,7 +3620,7 @@ class MapCanvas {
         const { w, h } = this.size();
         const ax = anchorClientX ?? w / 2;
         const ay = anchorClientY ?? h / 2;
-        const next = Math.max(0.2, Math.min(90, this.scale * factor));
+        const next = Math.max(0.2, Math.min(400, this.scale * factor));
         const wx = (ax - this.tx) / this.scale;
         const wy = (ay - this.ty) / this.scale;
         this.scale = next;
@@ -3631,7 +3639,7 @@ class MapCanvas {
         const bounds = this.view.graph.bounds(nodes.map(node => node.id));
         const bw = Math.max(6, bounds.maxX - bounds.minX);
         const bh = Math.max(6, bounds.maxY - bounds.minY);
-        this.scale = Math.max(0.2, Math.min(80, Math.min((w * 0.84) / bw, (h * 0.84) / bh)));
+        this.scale = Math.max(0.2, Math.min(400, Math.min((w * 0.84) / bw, (h * 0.84) / bh)));
         const cx = (bounds.minX + bounds.maxX) / 2;
         const cy = (bounds.minY + bounds.maxY) / 2;
         this.tx = w / 2 - cx * this.scale;
@@ -4699,8 +4707,9 @@ class MapWindow {
         <button class="dym-btn" data-act="clear-hidden">恢复全部显示</button>
       </div>
       <div class="dym-row">
-        <button class="dym-btn dym-primary" data-act="ai-fix-history">AI 整理本会话地点</button>
+        <button class="dym-btn dym-primary" data-act="ai-fix-history">AI 整理本会话地点<span class="dym-ai">AI</span></button>
       </div>
+      <div class="dym-api-result" data-role="trail-result"></div>
       <div class="dym-hint">聊天中途才装插件、或 AI 写的地点串太脏（混描述/时刻/拼层级）？点它把本会话出现过的
         原始地点串发给模型规范化成干净路径，玩出来的非设定地点顺带按方位给相对坐标。
         从头开始玩的新档不需要；整理结果存在本会话的轨迹数据里，重算时自动套用。</div>
@@ -4712,7 +4721,7 @@ class MapWindow {
         // ── 设置 ──
         const settings = this.panes.get('settings');
         settings.innerHTML = `
-      <details class="dym-sec" open><summary>地图布局 AI（接口与模型）</summary>
+      <details class="dym-sec"><summary>地图布局 AI（接口与模型）</summary>
         <div class="dym-hint">读世界书的地点条目、一次性给出坐标。与正文用的模型分开配置，默认沿用 MVU 的本地端点。</div>
         <div class="dym-field"><label>接口</label><input type="text" data-set="url" placeholder="http://localhost:1234/v1"></div>
         <div class="dym-field"><label>密钥</label>
@@ -4738,7 +4747,7 @@ class MapWindow {
         <div class="dym-row"><button class="dym-btn dym-primary" data-act="save-settings">保存设置</button></div>
       </details>
 
-      <details class="dym-sec"><summary>生成底图（按世界书铺点）</summary>
+      <details class="dym-sec"><summary>生成底图（按世界书铺点）<span class="dym-ai">AI</span></summary>
         <div class="dym-hint">
           读世界书里的<b>地点类条目</b>（《玄天界介绍》《地点：X》这类总纲），一次性给出大域、主要势力、
           主要城池的坐标；已经人工拖过的点会跳过，不会覆盖。<br>
@@ -4751,7 +4760,7 @@ class MapWindow {
         </div>
         <div class="dym-hint">改完记得点「保存设置」再生成。示例见 <code>docs/底图补充.txt</code>；
           相对线索的写法：<code>距某地N</code>、<code>向某方向N到某地</code>、<code>正上/正下方</code>、<code>宽N</code>。</div>
-        <div class="dym-row"><button class="dym-btn dym-primary" data-act="layout-world">生成底图</button></div>
+        <div class="dym-row"><button class="dym-btn dym-primary" data-act="layout-world">生成底图<span class="dym-ai">AI</span></button></div>
         <div class="dym-hint">生成结果（用了哪些条目、新增/移动/丢弃多少、模型原始回复）会显示在下面这块，同时抄一份到「导出 / 导入」的文本框里方便留存。</div>
         <div class="dym-report" data-role="layout-report">还没跑过地图布局 AI。</div>
         <div class="dym-row"><button class="dym-btn dym-danger" data-act="clear-nodes">清空地图上所有地点</button></div>
@@ -4796,6 +4805,7 @@ class MapWindow {
           <button class="dym-btn dym-primary" data-act="geo-mount">生成并挂载坐标世界书</button>
           <button class="dym-btn" data-act="geo-sync">立即同步</button>
         </div>
+        <div class="dym-api-result" data-role="geo-result"></div>
         <div class="dym-hint">「立即同步」= 按当前底图与设置**整体重写**《世界舆图·坐标表》：
           蓝灯的总纲/移动规则/叙事规则 3 条 + 当前已确认的地点条目（待定位的虚线圈本来就不进书）。
           切换会话后条目数量变化，多半是新会话的轨迹产生了新地点 —— 想清掉旧档地名就点下面的清理按钮。</div>
@@ -4977,12 +4987,20 @@ class MapWindow {
         this.setTab('settings');
     }
     /** 轻操作（获取模型/测试连接）的就地结果：写在按钮下面的小结果条里，不滚动、不跳页签 */
-    showApiResult(text) {
-        const box = this.ioPane().querySelector('[data-role=api-result]');
+    showApiResult(text, role = 'api-result') {
+        const box = this.ioPane().querySelector(`[data-role=${role}]`);
         if (box) {
             box.textContent = text;
             box.scrollTop = 0;
         }
+    }
+    /** 坐标世界书操作（挂载/同步/修复/删除）的就地结果：显示在本节按钮下方 */
+    showGeoResult(text) {
+        this.showApiResult(text, 'geo-result');
+    }
+    /** AI 整理本会话地点的就地结果：显示在轨迹页按钮下方 */
+    showTrailResult(text) {
+        this.showApiResult(text, 'trail-result');
     }
     async copyIo() {
         const text = this.ioValue();
@@ -6021,7 +6039,7 @@ async function runGeoSync(manual) {
         const failed = report.status === 'refused' || report.status === 'failed' || report.status === 'missing-api';
         if (manual) {
             toast(failed ? 'warning' : 'success', `坐标世界书：${report.message}`);
-            mapWindow?.showReport(`【坐标世界书同步】${report.status}\n${report.message}\n条目数：${report.entryCount}\n挂载状态：${describeGeoMount()}`, failed ? '同步被拒或缺接口，详见上方报告。' : '同步完成；挂载后正文提到地名才会注入对应坐标条目。');
+            mapWindow?.showGeoResult(`【坐标世界书同步】${report.status}\n${report.message}\n条目数：${report.entryCount}\n挂载状态：${describeGeoMount()}`);
         }
         else {
             window.console.info('[世界舆图] 坐标世界书自动同步：', report.message);
@@ -6032,7 +6050,7 @@ async function runGeoSync(manual) {
         geoStatus = `${describeGeoMount()}｜同步失败`;
         if (manual) {
             toast('error', `同步坐标世界书失败：${message}`);
-            mapWindow?.showReport(`【坐标世界书同步】失败\n${message}\n`, `同步失败：${message}`);
+            mapWindow?.showGeoResult(`【坐标世界书同步】失败\n${message}\n`);
         }
         else {
             window.console.warn('[世界舆图] 坐标世界书自动同步失败', error);
@@ -6480,18 +6498,16 @@ const actions = {
                 await attachCoordBook();
             geoStatus = `${describeGeoMount()}｜${report.message}`;
             toast('success', `坐标世界书已就绪并挂载（${report.entryCount} 条）`);
-            mapWindow?.showReport(`【挂载坐标世界书】完成\n${report.message}\n挂载状态：${describeGeoMount()}\n\n` +
+            mapWindow?.showGeoResult(`【挂载坐标世界书】完成\n${report.message}\n挂载状态：${describeGeoMount()}\n\n` +
                 '· 绿灯条目：正文提到地名才注入该地坐标（不提不花 token）\n' +
                 '· 每回合另有「地理态势」注入（本页可关）\n' +
-                '· 之后拖动/生成底图会自动同步进世界书（单向：底图 → 世界书）', '挂载完成；世界书侧手改的坐标会在下次同步被底图覆盖。');
+                '· 之后拖动/生成底图会自动同步进世界书（单向：底图 → 世界书）');
         }
         catch (error) {
             const message = String(error instanceof Error ? error.message : error);
             geoStatus = `${describeGeoMount()}｜挂载失败`;
             toast('error', `挂载坐标世界书失败：${message}`);
-            mapWindow?.showReport(`【挂载坐标世界书】失败\n${message}\n`, `挂载失败：${message}`);
-        }
-        finally {
+            mapWindow?.showGeoResult(`【挂载坐标世界书】失败\n${message}\n`);
             busy = null;
             render();
         }
@@ -6512,16 +6528,14 @@ const actions = {
             await attachCoordBook();
             geoStatus = `${describeGeoMount()}｜${wasMounted ? '绑定已重写并校验通过' : '已补挂'}`;
             toast('success', wasMounted ? '挂载状态已修复（绑定重写并读回校验）' : '已重新挂载坐标世界书');
-            mapWindow?.showReport(`【修复挂载】完成\n${wasMounted ? '原绑定已存在，已重写并读回校验' : '此前未挂载，现已补挂'}\n` +
-                `挂载状态：${describeGeoMount()}\n`, '修复完成；下一回合生成时坐标条目即可被扫描到。');
+            mapWindow?.showGeoResult(`【修复挂载】完成\n${wasMounted ? '原绑定已存在，已重写并读回校验' : '此前未挂载，现已补挂'}\n` +
+                `挂载状态：${describeGeoMount()}\n`);
         }
         catch (error) {
             const message = String(error instanceof Error ? error.message : error);
             geoStatus = `${describeGeoMount()}｜修复挂载失败`;
             toast('error', `修复挂载失败：${message}`);
-            mapWindow?.showReport(`【修复挂载】失败\n${message}\n`, `修复失败：${message}`);
-        }
-        finally {
+            mapWindow?.showGeoResult(`【修复挂载】失败\n${message}\n`);
             busy = null;
             render();
         }
@@ -6548,14 +6562,12 @@ const actions = {
             const message = await deleteCoordBook();
             geoStatus = describeGeoMount();
             toast('success', message);
-            mapWindow?.showReport(`【删除坐标世界书】${message}\n`, message);
+            mapWindow?.showGeoResult(`【删除坐标世界书】${message}\n`);
         }
         catch (error) {
             const message = String(error instanceof Error ? error.message : error);
             toast('error', `删除失败：${message}`);
-            mapWindow?.showReport(`【删除坐标世界书】失败\n${message}\n`, `删除失败：${message}`);
-        }
-        finally {
+            mapWindow?.showGeoResult(`【删除坐标世界书】失败\n${message}\n`);
             busy = null;
             render();
         }
@@ -6605,16 +6617,16 @@ const actions = {
             persistTrail();
             refreshTrail();
             toast('success', `已整理 ${fixes.length}/${raws.length} 条地点串，轨迹已重建`);
-            mapWindow?.showReport(`【AI 整理本会话地点】完成\n输入 ${raws.length} 条，整理出 ${fixes.length} 条：\n` +
+            mapWindow?.showTrailResult(`【AI 整理本会话地点】完成\n输入 ${raws.length} 条，整理出 ${fixes.length} 条：\n` +
                 fixes
                     .map(fix => `  · ${fix.raw}\n    → ${fix.path}${Number.isFinite(fix.x) ? ` (${fix.x}, ${fix.y})` : ''}`)
                     .join('\n') +
-                '\n\n整理结果已存进本会话的轨迹数据，之后每次重算都会套用；新的脏写法出现后再点一次即可。', '轨迹已按整理结果重建；没整理到的条目仍走脚本解析。');
+                '\n\n整理结果已存进本会话的轨迹数据，之后每次重算都会套用；新的脏写法出现后再点一次即可。');
         }
         catch (error) {
             const message = String(error instanceof Error ? error.message : error);
             toast('error', `整理失败：${message}`);
-            mapWindow?.showReport(`【AI 整理本会话地点】失败\n${message}\n`, `整理失败：${message}`);
+            mapWindow?.showTrailResult(`【AI 整理本会话地点】失败\n${message}\n`);
         }
         finally {
             busy = null;

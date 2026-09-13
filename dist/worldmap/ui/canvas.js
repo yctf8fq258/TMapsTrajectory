@@ -114,7 +114,7 @@ export class MapCanvas {
         const { w, h } = this.size();
         const ax = anchorClientX ?? w / 2;
         const ay = anchorClientY ?? h / 2;
-        const next = Math.max(0.2, Math.min(90, this.scale * factor));
+        const next = Math.max(0.2, Math.min(400, this.scale * factor));
         const wx = (ax - this.tx) / this.scale;
         const wy = (ay - this.ty) / this.scale;
         this.scale = next;
@@ -133,7 +133,7 @@ export class MapCanvas {
         const bounds = this.view.graph.bounds(nodes.map(node => node.id));
         const bw = Math.max(6, bounds.maxX - bounds.minX);
         const bh = Math.max(6, bounds.maxY - bounds.minY);
-        this.scale = Math.max(0.2, Math.min(80, Math.min((w * 0.84) / bw, (h * 0.84) / bh)));
+        this.scale = Math.max(0.2, Math.min(400, Math.min((w * 0.84) / bw, (h * 0.84) / bh)));
         const cx = (bounds.minX + bounds.maxX) / 2;
         const cy = (bounds.minY + bounds.maxY) / 2;
         this.tx = w / 2 - cx * this.scale;
