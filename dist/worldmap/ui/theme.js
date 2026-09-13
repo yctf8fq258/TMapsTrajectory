@@ -172,9 +172,10 @@ export const CSS = `
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   pointer-events: none;
 }
-.dym-svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.dym-svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
 .dym-svg.dym-panning { cursor: grabbing; }
 .dym-svg.dym-editing { cursor: crosshair; }
+.dym-svg.dym-boxselect { cursor: default; }
 
 .dym-breadcrumb {
   position: absolute; left: 9px; top: 9px; display: flex; flex-wrap: wrap; gap: 2px; align-items: center;

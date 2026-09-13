@@ -1172,6 +1172,7 @@ async function init(): Promise<void> {
         actions.onMoveSelected(xy);
       },
       onMoveNodes: items => actions.onMoveNodes(items),
+      onBoxSelected: count => toast('info', `已框选 ${count} 个点：抓住其中一点拖动整组；Shift 点单点加减选`),
       onEditNode: id => {
         const node = graph.get(id);
         if (node) mapWindow?.contextMenu(node);

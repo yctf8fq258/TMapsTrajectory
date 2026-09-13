@@ -3096,9 +3096,10 @@ const CSS = `
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   pointer-events: none;
 }
-.dym-svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.dym-svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
 .dym-svg.dym-panning { cursor: grabbing; }
 .dym-svg.dym-editing { cursor: crosshair; }
+.dym-svg.dym-boxselect { cursor: default; }
 
 .dym-breadcrumb {
   position: absolute; left: 9px; top: 9px; display: flex; flex-wrap: wrap; gap: 2px; align-items: center;
@@ -3608,6 +3609,14 @@ class MapCanvas {
     /** 框选模式开关 */
     setBoxSelect(value) {
         this.boxSelectMode = value;
+        this.updateCursor();
+    }
+    /** 光标三态互斥：框选模式空闲=箭头；平移/拖点=抓手；框选拖动=十字 */
+    updateCursor() {
+        const svg = this.svg;
+        svg.classList.toggle('dym-boxselect', this.boxSelectMode && !this.drag);
+        svg.classList.toggle('dym-panning', Boolean(this.drag) && this.drag?.mode !== 'rubber');
+        svg.classList.toggle('dym-editing', this.drag?.mode === 'rubber');
     }
     /** 顶部中间的坐标条：显示当前选中点的名称 + 坐标（没选中就藏起来） */
     hud;
@@ -4316,6 +4325,8 @@ class MapCanvas {
                     picked.add(node.id);
             }
             this.multi = picked;
+            if (picked.size)
+                this.hooks.onBoxSelected?.(picked.size);
         }
         this.rubber = null;
         this.render();
@@ -4355,6 +4366,9 @@ class MapCanvas {
         this.svg.addEventListener('pointerdown', event => {
             if (event.button !== 0)
                 return;
+            // 编辑/框选交互压掉浏览器默认行为：不压的话拖动会选中 SVG 文字（蓝高亮）并干扰指针事件
+            if (this.view.editMode || this.boxSelectMode)
+                event.preventDefault();
             this.svg.setPointerCapture(event.pointerId);
             const shift = event.shiftKey;
             const node = this.hitTest(event.clientX, event.clientY);
@@ -4369,7 +4383,7 @@ class MapCanvas {
                         originY: 0,
                         moved: false,
                     };
-                    this.svg.classList.add('dym-panning');
+                    this.updateCursor();
                     return;
                 }
                 if (node && shift) {
@@ -4398,7 +4412,7 @@ class MapCanvas {
                         origins,
                         moved: false,
                     };
-                    this.svg.classList.add('dym-panning');
+                    this.updateCursor();
                     return;
                 }
                 if (node) {
@@ -4414,7 +4428,7 @@ class MapCanvas {
                         originY: pos[1],
                         moved: false,
                     };
-                    this.svg.classList.add('dym-panning');
+                    this.updateCursor();
                     return;
                 }
                 if (!shift)
@@ -4428,7 +4442,7 @@ class MapCanvas {
                 originY: this.ty,
                 moved: false,
             };
-            this.svg.classList.add('dym-panning');
+            this.updateCursor();
         });
         this.svg.addEventListener('pointermove', event => {
             if (!this.drag)
@@ -4476,7 +4490,7 @@ class MapCanvas {
                 return;
             const current = this.drag;
             this.drag = null;
-            this.svg.classList.remove('dym-panning');
+            this.updateCursor();
             if (current.mode === 'node' && current.id && current.moved) {
                 const node = this.view.graph.get(current.id);
                 if (node) {
@@ -7058,6 +7072,7 @@ async function init() {
             actions.onMoveSelected(xy);
         },
         onMoveNodes: items => actions.onMoveNodes(items),
+        onBoxSelected: count => toast('info', `已框选 ${count} 个点：抓住其中一点拖动整组；Shift 点单点加减选`),
         onEditNode: id => {
             const node = graph.get(id);
             if (node)
