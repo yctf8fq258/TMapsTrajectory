@@ -4877,8 +4877,8 @@ class MapWindow {
         const trail = this.panes.get('trail');
         trail.innerHTML = `
       <div class="dym-row">
-        <button class="dym-btn" data-act="rebuild">从聊天记录重算</button>
-        <button class="dym-btn" data-act="clear-hidden">恢复全部显示</button>
+        <button class="dym-btn" data-act="rebuild" title="清空当前轨迹层（含拖过的位置、隐藏列表）并按聊天记录全量重建；配合「AI 整理」可清除历史污点">从聊天记录重算</button>
+        <button class="dym-btn" data-act="clear-hidden" title="取消隐藏所有轨迹点">恢复全部显示</button>
       </div>
       <div class="dym-row">
         <button class="dym-btn dym-primary" data-act="ai-fix-history">AI 整理本会话地点<span class="dym-ai">AI</span></button>
@@ -4886,7 +4886,8 @@ class MapWindow {
       <div class="dym-api-result" data-role="trail-result"></div>
       <div class="dym-hint">聊天中途才装插件、或 AI 写的地点串太脏（混描述/时刻/拼层级）？点它把本会话出现过的
         原始地点串发给模型规范化成干净路径，玩出来的非设定地点顺带按方位给相对坐标。
-        从头开始玩的新档不需要；整理结果存在本会话的轨迹数据里，重算时自动套用。</div>
+        从头开始玩的新档不需要；整理结果存在本会话的轨迹数据里，重算时自动套用。<br>
+        清污两步：<b>先「从聊天记录重算」（全量重建，会清掉拖过的轨迹点位置）→ 再「AI 整理」</b>。</div>
       <div class="dym-hint" data-role="trail-hint"></div>
       <ul class="dym-list" data-role="trail-list"></ul>`;
         trail.querySelector('[data-act=rebuild]')?.addEventListener('click', () => this.actions.onRebuildTrail());
@@ -6068,7 +6069,7 @@ function readCurrentLocation() {
     }
     return null;
 }
-function refreshTrail() {
+function refreshTrail(options = {}) {
     try {
         const lastId = getLastMessageId();
         if (lastId < 0) {
@@ -6083,6 +6084,16 @@ function refreshTrail() {
             render();
             return;
         }
+        if (options.fullReset) {
+            // 全量重建（「从聊天记录重算」按钮）：轨迹层整个丢弃 —— 旧解析规则留下的、
+            // 不再被引用的节点、拖过的位置、隐藏列表全部清掉，按当前聊天记录重新长出来。
+            // pathFixes（AI 整理结果）保留，重建时自动套用。
+            const stale = new Set(graph.toArray().filter(isTrailLayerNode).map(node => node.id));
+            graph = new MapGraph(graph.toArray().filter(node => !stale.has(node.id)));
+            timelineIndex = null;
+            trail = { schemaVersion: 1, points: [], hiddenPointIds: [], nodes: [], pathFixes: trail?.pathFixes };
+            lastTrailJson = '';
+        }
         const messages = getChatMessages(`0-${lastId}`);
         const result = rebuildTrail({
             messages: messages.map(message => ({
@@ -6092,7 +6103,7 @@ function refreshTrail() {
             })),
             graph,
             hiddenPointIds: [...(trail?.hiddenPointIds ?? [])],
-            previous: trail,
+            previous: options.fullReset ? null : trail,
             pathFixes: trail?.pathFixes,
         });
         trail = result.trail;
@@ -6114,6 +6125,7 @@ function refreshTrail() {
         }
         if (dirty && sanitizeGraph('轨迹新建节点后'))
             dirty = true;
+        pruneTrailNodes();
         if (dirty)
             persistBaseMap();
         persistTrail();
@@ -6130,6 +6142,35 @@ function refreshTrail() {
 function syncStatus(note) {
     const base = `节点 ${graph.size} 个｜轨迹 ${trail.points.length} 点`;
     status = note ? `${note}｜${base}` : base;
+}
+/**
+ * 轨迹层剪枝：重算后，轨迹来源且**没有任何存活点引用**、也没锁定的节点一律清掉。
+ * 没有这一步，旧解析规则建出来的节点会永远躺在轨迹层里越积越多（实测 173 个点里一大半是残渣）。
+ * 保留：被存活点引用的节点、它们的祖先链（路径中转站）、锁定的（人工拖过）。
+ */
+function pruneTrailNodes() {
+    const referenced = new Set();
+    for (const point of trail.points) {
+        if (point.orphan)
+            continue;
+        referenced.add(point.nodeId);
+    }
+    const keep = new Set();
+    for (const id of referenced) {
+        for (const ancestor of graph.ancestors(id))
+            keep.add(ancestor.id);
+        if (id)
+            keep.add(id);
+    }
+    const doomed = graph
+        .toArray()
+        .filter(node => isTrailLayerNode(node) && !node.locked && !keep.has(node.id))
+        .map(node => node.id);
+    if (!doomed.length)
+        return;
+    const doomedSet = new Set(doomed);
+    graph = new MapGraph(graph.toArray().filter(node => !doomedSet.has(node.id)));
+    window.console.info(`[世界舆图] 轨迹层剪枝：清掉 ${doomed.length} 个不再引用的节点`);
 }
 function scheduleRefresh(reason) {
     if (refreshTimer)
@@ -6541,8 +6582,8 @@ const actions = {
         render();
     },
     onRebuildTrail() {
-        refreshTrail();
-        toast('success', `已重算：${trail.points.length} 个轨迹点`);
+        refreshTrail({ fullReset: true });
+        toast('success', `轨迹层已清空并全量重建：${trail.points.length} 个轨迹点`);
     },
     onClearHiddenPoints() {
         trail.hiddenPointIds = [];

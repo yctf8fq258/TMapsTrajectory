@@ -216,7 +216,7 @@ function readCurrentLocation(): string | null {
   return null;
 }
 
-function refreshTrail(): void {
+function refreshTrail(options: { fullReset?: boolean } = {}): void {
   try {
     const lastId = getLastMessageId();
     if (lastId < 0) {
@@ -231,6 +231,16 @@ function refreshTrail(): void {
       render();
       return;
     }
+    if (options.fullReset) {
+      // 全量重建（「从聊天记录重算」按钮）：轨迹层整个丢弃 —— 旧解析规则留下的、
+      // 不再被引用的节点、拖过的位置、隐藏列表全部清掉，按当前聊天记录重新长出来。
+      // pathFixes（AI 整理结果）保留，重建时自动套用。
+      const stale = new Set(graph.toArray().filter(isTrailLayerNode).map(node => node.id));
+      graph = new MapGraph(graph.toArray().filter(node => !stale.has(node.id)));
+      timelineIndex = null;
+      trail = { schemaVersion: 1, points: [], hiddenPointIds: [], nodes: [], pathFixes: trail?.pathFixes };
+      lastTrailJson = '';
+    }
     const messages = getChatMessages(`0-${lastId}`) as unknown as { message: string; is_user?: boolean; swipe_id?: number }[];
     const result = rebuildTrail({
       messages: messages.map(message => ({
@@ -240,7 +250,7 @@ function refreshTrail(): void {
       })),
       graph,
       hiddenPointIds: [...(trail?.hiddenPointIds ?? [])],
-      previous: trail,
+      previous: options.fullReset ? null : trail,
       pathFixes: trail?.pathFixes,
     });
     trail = result.trail;
@@ -260,6 +270,7 @@ function refreshTrail(): void {
       currentPath = trail.points[trail.points.length - 1].path;
     }
     if (dirty && sanitizeGraph('轨迹新建节点后')) dirty = true;
+    pruneTrailNodes();
     if (dirty) persistBaseMap();
     persistTrail();
     status = `节点 ${graph.size} 个｜轨迹 ${trail.points.length} 点${result.orphanCount ? `（含 ${result.orphanCount} 个存档已删楼层）` : ''}`;
@@ -275,6 +286,32 @@ function refreshTrail(): void {
 function syncStatus(note?: string): void {
   const base = `节点 ${graph.size} 个｜轨迹 ${trail.points.length} 点`;
   status = note ? `${note}｜${base}` : base;
+}
+
+/**
+ * 轨迹层剪枝：重算后，轨迹来源且**没有任何存活点引用**、也没锁定的节点一律清掉。
+ * 没有这一步，旧解析规则建出来的节点会永远躺在轨迹层里越积越多（实测 173 个点里一大半是残渣）。
+ * 保留：被存活点引用的节点、它们的祖先链（路径中转站）、锁定的（人工拖过）。
+ */
+function pruneTrailNodes(): void {
+  const referenced = new Set<string>();
+  for (const point of trail.points) {
+    if (point.orphan) continue;
+    referenced.add(point.nodeId);
+  }
+  const keep = new Set<string>();
+  for (const id of referenced) {
+    for (const ancestor of graph.ancestors(id)) keep.add(ancestor.id);
+    if (id) keep.add(id);
+  }
+  const doomed = graph
+    .toArray()
+    .filter(node => isTrailLayerNode(node) && !node.locked && !keep.has(node.id))
+    .map(node => node.id);
+  if (!doomed.length) return;
+  const doomedSet = new Set(doomed);
+  graph = new MapGraph(graph.toArray().filter(node => !doomedSet.has(node.id)));
+  window.console.info(`[世界舆图] 轨迹层剪枝：清掉 ${doomed.length} 个不再引用的节点`);
 }
 
 function scheduleRefresh(reason: string): void {
@@ -683,8 +720,8 @@ const actions = {
     render();
   },
   onRebuildTrail() {
-    refreshTrail();
-    toast('success', `已重算：${trail.points.length} 个轨迹点`);
+    refreshTrail({ fullReset: true });
+    toast('success', `轨迹层已清空并全量重建：${trail.points.length} 个轨迹点`);
   },
   onClearHiddenPoints() {
     trail.hiddenPointIds = [];

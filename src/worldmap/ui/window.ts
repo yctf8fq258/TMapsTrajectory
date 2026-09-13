@@ -384,8 +384,8 @@ export class MapWindow {
     const trail = this.panes.get('trail') as HTMLElement;
     trail.innerHTML = `
       <div class="dym-row">
-        <button class="dym-btn" data-act="rebuild">从聊天记录重算</button>
-        <button class="dym-btn" data-act="clear-hidden">恢复全部显示</button>
+        <button class="dym-btn" data-act="rebuild" title="清空当前轨迹层（含拖过的位置、隐藏列表）并按聊天记录全量重建；配合「AI 整理」可清除历史污点">从聊天记录重算</button>
+        <button class="dym-btn" data-act="clear-hidden" title="取消隐藏所有轨迹点">恢复全部显示</button>
       </div>
       <div class="dym-row">
         <button class="dym-btn dym-primary" data-act="ai-fix-history">AI 整理本会话地点<span class="dym-ai">AI</span></button>
@@ -393,7 +393,8 @@ export class MapWindow {
       <div class="dym-api-result" data-role="trail-result"></div>
       <div class="dym-hint">聊天中途才装插件、或 AI 写的地点串太脏（混描述/时刻/拼层级）？点它把本会话出现过的
         原始地点串发给模型规范化成干净路径，玩出来的非设定地点顺带按方位给相对坐标。
-        从头开始玩的新档不需要；整理结果存在本会话的轨迹数据里，重算时自动套用。</div>
+        从头开始玩的新档不需要；整理结果存在本会话的轨迹数据里，重算时自动套用。<br>
+        清污两步：<b>先「从聊天记录重算」（全量重建，会清掉拖过的轨迹点位置）→ 再「AI 整理」</b>。</div>
       <div class="dym-hint" data-role="trail-hint"></div>
       <ul class="dym-list" data-role="trail-list"></ul>`;
     trail.querySelector('[data-act=rebuild]')?.addEventListener('click', () => this.actions.onRebuildTrail());
