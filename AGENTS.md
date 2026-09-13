@@ -128,7 +128,8 @@ README.md           面向 GitHub 访客的说明（改功能后记得同步）
 | `tools/selftest.mjs` | 用的是**本机真实存档**的绝对路径，还内嵌了作品地名 |
 | `tools/inspect-chat.mjs` | 直接读本机 TauriTavern 数据目录，含个人路径 |
 | `tools/harness.html` / `harness-fixture.js` | 试验台，内含作品世界书条目与地名 |
-| `tools/win.ps1` | 只服务试验台窗口的 Windows 小工具 |
+| `tools/win.ps1` | 只服务试验台窗口的 Windows 小工具（`-PW` 用 PrintWindow 抓被遮挡窗口） |
+| `tools/shot.sh` | 试验台截图助手：经 DevTools 端口开标签页 → 抓窗 → 关标签（需 Chrome 带 `--remote-debugging-port=9222`） |
 | `docs/计划书-世界舆图插件.md` | 内部立项文档，含世界书 uid 与大量作品专名 |
 
 ⚠️ 因此 **`npm run selftest` 在克隆下来的仓库里跑不了**（缺文件），自己在本地开发时才可用。
@@ -140,6 +141,7 @@ README.md           面向 GitHub 访客的说明（改功能后记得同步）
 |---|---|
 | `fresh=1` | 先清掉 `worldmap_map*` / `harness_*` 的 localStorage，保证干净起点 |
 | `tab=settings\|layers\|places\|edit\|trail` | 打开时停在哪个页签 |
+| `size=980x640` | 把悬浮窗设成指定尺寸（截图审查用；不传用上次布局） |
 | `open=all` | 展开设置页全部折叠小节 |
 | `scroll=N` | 抽屉滚动到第 N 像素（一屏放不下时逐段截图用） |
 | `zoom=N` | 启动后把相机设到指定倍率 |

@@ -27,7 +27,10 @@ tools/inspect-chat.mjs
 tools/harness.html
 tools/harness-fixture.js
 tools/win.ps1
+tools/shot.sh
 docs/计划书-世界舆图插件.md
+docs/计划书-坐标世界书与地理态势.md
+docs/底图补充.txt
 
 # ── 注意：dist/ 必须入库！─────────────────────────────
 # 「外链加载版」用 jsdelivr 直接读仓库里的

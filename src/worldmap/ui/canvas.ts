@@ -15,6 +15,7 @@ import {
   COORD_MAX,
   COORD_MIN,
   TIER_FONT_PX,
+  TIER_HIDE_ABOVE_SCALE,
   TIER_LABEL_SCALE,
   TIER_RADIUS_PX,
   TIER_VISIBLE_SCALE,
@@ -131,6 +132,8 @@ export class MapCanvas {
   private connectors: { from: Vec2; to: Vec2 }[] = [];
   private drawn: MapNode[] = [];
   private childCount = new Map<string, number>();
+  /** 顶部中间的坐标条：显示当前选中点的名称 + 坐标（没选中就藏起来） */
+  private hud: HTMLDivElement;
 
   constructor(private wrap: HTMLElement, private hooks: CanvasHooks, view: CanvasView) {
     this.view = view;
@@ -144,6 +147,10 @@ export class MapCanvas {
     this.layer.append(this.regionLayer, this.linkLayer, this.trailLayer, this.nodeLayer);
     this.svg.append(this.layer, this.overlay);
     wrap.appendChild(this.svg);
+    this.hud = wrap.ownerDocument.createElement('div');
+    this.hud.className = 'dym-hud';
+    this.hud.style.display = 'none';
+    wrap.appendChild(this.hud);
     this.bind();
   }
 
@@ -287,11 +294,22 @@ export class MapCanvas {
   /**
    * 轨迹落点：默认把市级以内（tier 4/5，比如某某客房、水井、马厩）的点**归并到它最近的市级祖先**，
    * 否则在客栈里走两步就画出一张蜘蛛网。关掉「轨迹只到市级」开关就恢复逐点绘制。
+   * 返回 null = 这个点的节点在底图里已经找不到（被清空/重建/换会话后 id 失联），
+   * 画线时必须在此断开 —— 否则按陈旧坐标硬画会连出一条指向空地的幻影长线。
    */
-  private trailPos(point: TrailPoint): Vec2 {
+  private trailNode(point: TrailPoint): MapNode | null {
     const graph = this.view.graph;
     const node = graph.get(point.nodeId);
-    if (!node) return point.xy;
+    if (node) return node;
+    // 自愈：底图重建后 id 会变，但 path 没变就还能认领回来
+    if (!point.path) return null;
+    return graph.byPath.get(point.path) ?? null;
+  }
+
+  private trailPos(point: TrailPoint): Vec2 | null {
+    const graph = this.view.graph;
+    const node = this.trailNode(point);
+    if (!node) return null;
     if (this.view.trailCityOnly) {
       let cursor = node;
       const guard = new Set<string>();
@@ -312,7 +330,7 @@ export class MapCanvas {
     if (!this.view.showTrail) return [];
     const cut =
       this.view.timelineIndex === null ? this.view.trail : this.view.trail.slice(0, this.view.timelineIndex + 1);
-    return polylinePoints(cut, this.view.hiddenPointIds);
+    return polylinePoints(cut, this.view.hiddenPointIds).filter(point => this.trailNode(point));
   }
 
   // ── 高德式分级 + 屏幕空间去重 ────────────────────────────────────────
@@ -359,7 +377,12 @@ export class MapCanvas {
       if (node.status === 'unplaced' && !this.view.showUnplaced) continue;
       const tier = tierOf(node);
       const threshold = TIER_VISIBLE_SCALE[Math.min(tier, TIER_VISIBLE_SCALE.length - 1)] ?? 1;
-      if (this.scale >= threshold || keep.has(node.id)) candidates.push(node);
+      if (this.scale < threshold) continue;
+      // 高倍缩放时大域/地域点自动退场（高德式）：放大到街区级，「中州」这种洲级粒度只剩噪音。
+      // 焦点/选中/当前地点的祖先链不受影响 —— 用户明确盯着的那条链保留。
+      const hideAbove = TIER_HIDE_ABOVE_SCALE[Math.min(tier, TIER_HIDE_ABOVE_SCALE.length - 1)];
+      if (this.scale > hideAbove && !keep.has(node.id)) continue;
+      candidates.push(node);
     }
 
     // 按优先级贪心占位：屏幕上贴太近的只留一个，缩小时洛阳就只剩一颗点
@@ -377,6 +400,10 @@ export class MapCanvas {
       accepted.push({ node, sx, sy, tier: tierOf(node) });
     }
     this.drawn = accepted.map(item => item.node);
+
+    // 宏观视角：缩放还没到「看得见城内要点」的级别时（窗口跨度 ≥ 一个大域），
+    // 只报地名 —— 隐藏大域图标与层级连线，越宏观越要干净（细节留给放大后）。
+    const macro = this.scale < (TIER_VISIBLE_SCALE[4] ?? 2.6);
 
     // 区域轮廓：界域/地域是「一片地方」而不是「一个点」—— 用虚线多边形把范围围出来，
     // 才看得出「省」（州/域）和「市」（宗/城）的差别。
@@ -421,8 +448,11 @@ export class MapCanvas {
 
     // 层级连线：只连到市级及以上（tier ≤ 3）。屋里那些房间不连线，
     // 否则一个客栈十三间房会从同一个点甩出十三根线，看着像蜘蛛网。
+    // 宏观视角整组不画 —— 跨越大半张图的长线在缩小时只是噪音。
+    // 接近阈值时按缩放淡入，避免「啪」地一下整片线闪出来。
+    const linkFade = Math.max(0, Math.min(1, (this.scale - (TIER_VISIBLE_SCALE[4] ?? 2.6)) / 0.6));
     const links = el('g');
-    if (this.view.showLinks) {
+    if (this.view.showLinks && linkFade > 0.04) {
       const acceptedIds = new Set(accepted.map(item => item.node.id));
       for (const item of accepted) {
         if (item.tier > 3) continue;
@@ -432,15 +462,21 @@ export class MapCanvas {
         if (!parent) continue;
         const from = this.worldPos(parent);
         const to = this.worldPos(item.node);
+        const dx = to[0] - from[0];
+        const dy = to[1] - from[1];
+        const len = Math.hypot(dx, dy) || 1;
+        // 轻微弧线：控制点落在中点法线方向偏移 8%，比直线更像手绘地图上的连线
+        const bend = len * 0.08;
+        const mx = (from[0] + to[0]) / 2 - (dy / len) * bend;
+        const my = (from[1] + to[1]) / 2 + (dx / len) * bend;
         links.appendChild(
-          el('line', {
-            x1: from[0],
-            y1: from[1],
-            x2: to[0],
-            y2: to[1],
+          el('path', {
+            d: `M${from[0]},${from[1]} Q${mx},${my} ${to[0]},${to[1]}`,
             class: 'dym-link',
             'vector-effect': 'non-scaling-stroke',
-            'stroke-width': 1.1,
+            'stroke-width': item.tier <= 2 ? 1.3 : 1,
+            // 层级越深线越淡：一眼能看出主干（大域→城池）与末梢；再乘宏观淡入系数
+            'stroke-opacity': String(Math.max(0.2, 0.58 - item.node.depth * 0.07) * linkFade),
           }),
         );
       }
@@ -497,45 +533,61 @@ export class MapCanvas {
         segment = [];
       };
       points.forEach((point, index) => {
-        if (point.kind === 'travel' && segment.length) {
-          segment.push(positions[index]);
-          segmentTravel = true;
+        const pos = positions[index];
+        // 节点失联（底图里已删除/重建）：轨迹线在此断开，绝不按陈旧坐标连去空地
+        if (!pos) {
           flush();
-          segment = [positions[index]];
           segmentTravel = false;
           return;
         }
-        segment.push(positions[index]);
+        if (point.kind === 'travel' && segment.length) {
+          segment.push(pos);
+          segmentTravel = true;
+          flush();
+          segment = [pos];
+          segmentTravel = false;
+          return;
+        }
+        segment.push(pos);
       });
       flush();
 
-      const last = positions[positions.length - 1];
-      // 这两个小圆同样必须按屏幕像素换算成世界单位：任何缩放级别下都保持同样大小。
-      // 脉冲环用 SVG <animate> 而不是 CSS keyframes —— CSS 里写死的 r 是世界单位，
-      // 放大到几十倍会变成几百像素的巨环（踩过这个坑）。
-      const pulse = el('circle', { cx: last[0], cy: last[1], r: 3.5 / this.scale, class: 'dym-pulse' });
-      for (const [attribute, values] of [
-        ['r', `${3.5 / this.scale};${17 / this.scale}`],
-        ['opacity', '0.55;0'],
-      ] as [string, string][]) {
-        const animate = document.createElementNS(SVG_NS, 'animate');
-        animate.setAttribute('attributeName', attribute);
-        animate.setAttribute('values', values);
-        animate.setAttribute('dur', '1.9s');
-        animate.setAttribute('repeatCount', 'indefinite');
-        pulse.appendChild(animate);
+      // 脉冲点画在最后一个有效位置上
+      let last: Vec2 | null = null;
+      for (let index = positions.length - 1; index >= 0; index--) {
+        if (positions[index]) {
+          last = positions[index];
+          break;
+        }
       }
-      trailGroup.appendChild(pulse);
-      trailGroup.appendChild(
-        el('circle', {
-          cx: last[0],
-          cy: last[1],
-          r: 4.4 / Math.max(0.3, this.scale),
-          fill: '#a83a1a',
-          stroke: 'rgba(253,247,232,.95)',
-          'stroke-width': 1.5 / Math.max(0.3, this.scale),
-        }),
-      );
+      if (last) {
+        // 这两个小圆同样必须按屏幕像素换算成世界单位：任何缩放级别下都保持同样大小。
+        // 脉冲环用 SVG <animate> 而不是 CSS keyframes —— CSS 里写死的 r 是世界单位，
+        // 放大到几十倍会变成几百像素的巨环（踩过这个坑）。
+        const pulse = el('circle', { cx: last[0], cy: last[1], r: 3.5 / this.scale, class: 'dym-pulse' });
+        for (const [attribute, values] of [
+          ['r', `${3.5 / this.scale};${17 / this.scale}`],
+          ['opacity', '0.55;0'],
+        ] as [string, string][]) {
+          const animate = document.createElementNS(SVG_NS, 'animate');
+          animate.setAttribute('attributeName', attribute);
+          animate.setAttribute('values', values);
+          animate.setAttribute('dur', '1.9s');
+          animate.setAttribute('repeatCount', 'indefinite');
+          pulse.appendChild(animate);
+        }
+        trailGroup.appendChild(pulse);
+        trailGroup.appendChild(
+          el('circle', {
+            cx: last[0],
+            cy: last[1],
+            r: 4.4 / Math.max(0.3, this.scale),
+            fill: '#a83a1a',
+            stroke: 'rgba(253,247,232,.95)',
+            'stroke-width': 1.5 / Math.max(0.3, this.scale),
+          }),
+        );
+      }
     }
     this.trailLayer.replaceChildren(trailGroup, altGroup);
 
@@ -562,12 +614,28 @@ export class MapCanvas {
       const radius = (radiusPx * shrink) / Math.max(0.3, this.scale);
       const pos = this.worldPos(node);
       const color = KIND_COLORS[node.kind] ?? '#6f6252';
-      const group = el('g', { class: 'dym-node', 'data-id': node.id });
+      const group = el('g', { class: `dym-node dym-lv${tier}`, 'data-id': node.id });
       if (node.status === 'unplaced') group.classList.add('dym-unplaced');
       if (node.id === this.view.selectedId) group.classList.add('dym-selected');
       if (this.view.focusId && node.id !== this.view.focusId) {
         const inside = graph.ancestors(node.id).some(ancestor => ancestor.id === this.view.focusId);
         if (!inside && tier >= 3) group.classList.add('dym-dim');
+      }
+
+      // 界域/地域是「一片地方」，加一圈极淡的外环，让它与城池/宗门在观感上分开
+      if (tier <= 2) {
+        group.appendChild(
+          el('circle', {
+            cx: pos[0],
+            cy: pos[1],
+            r: radius * 1.62,
+            fill: 'none',
+            stroke: color,
+            'stroke-opacity': 0.2,
+            'vector-effect': 'non-scaling-stroke',
+            'stroke-width': 1,
+          }),
+        );
       }
 
       const halo = el('circle', {
@@ -582,25 +650,29 @@ export class MapCanvas {
       group.appendChild(halo);
       group.appendChild(el('circle', { cx: pos[0], cy: pos[1], r: radius * 0.72, fill: color }));
 
-      const icon = ICONS[node.kind] ?? ICONS.poi;
-      const iconScale = (radius * 1.35) / 24;
-      const iconGroup = el('g', {
-        transform: `translate(${pos[0] - 12 * iconScale},${pos[1] - 12 * iconScale}) scale(${iconScale})`,
-        fill: 'none',
-        stroke: 'rgba(253,247,232,.95)',
-        'stroke-width': 2,
-        'stroke-linecap': 'round',
-        'stroke-linejoin': 'round',
-      });
-      for (const d of icon.paths) iconGroup.appendChild(el('path', { d }));
-      for (const [cx, cy, r] of icon.circles ?? []) iconGroup.appendChild(el('circle', { cx, cy, r }));
-      group.appendChild(iconGroup);
+      // 宏观视角下大域只留地名（图标在这个尺度纯属噪音）；放大后再把图标带回来
+      if (!(macro && tier <= 2)) {
+        const icon = ICONS[node.kind] ?? ICONS.poi;
+        const iconScale = (radius * 1.35) / 24;
+        const iconGroup = el('g', {
+          transform: `translate(${pos[0] - 12 * iconScale},${pos[1] - 12 * iconScale}) scale(${iconScale})`,
+          fill: 'none',
+          stroke: 'rgba(253,247,232,.95)',
+          'stroke-width': 2,
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+        });
+        for (const d of icon.paths) iconGroup.appendChild(el('path', { d }));
+        for (const [cx, cy, r] of icon.circles ?? []) iconGroup.appendChild(el('circle', { cx, cy, r }));
+        group.appendChild(iconGroup);
+      }
 
       if (node.altitude) {
         const badge = el('text', {
           x: pos[0] + radius * 1.15,
           y: pos[1] - radius * 0.75,
           'font-size': 12 / Math.max(0.3, this.scale),
+          'stroke-width': 2 / Math.max(0.3, this.scale),
           fill: '#4f6d78',
         });
         badge.textContent = node.altitude > 0 ? '▲' : '▼';
@@ -614,35 +686,80 @@ export class MapCanvas {
       }
     }
 
-    // 标签避让：大的先占位，压住的就不画。
-    // 判定用的是**标签矩形**（锚点 + 文字宽度）而不是锚点距离 —— 否则右侧延伸的文字
-    // 会盖住下一个点的标签，看起来就是一团糊。
-    labelCandidates.sort((a, b) => a.tier - b.tier);
-    const acceptedLabels: { node: MapNode; pos: Vec2; tier: number; box: [number, number, number, number] }[] = [];
+    // 标签避让（高德式）：
+    //   1) 选中 / 当前地点是「种子」，最先占位，别的标签必须绕开它们；
+    //   2) 其余按层级从大到小排队，先试点标**右侧**，放不下换**左侧**，两侧都没有空间才不画；
+    //   3) 判定用标签矩形（锚点 + 文字宽度），并且**点标本身也是障碍物** —— 标签不许压到别家的圆点。
+    const isSeedLabel = (id: string) => id === this.view.selectedId || id === currentId;
+    labelCandidates.sort((a, b) => {
+      const seedA = isSeedLabel(a.node.id) ? 0 : 1;
+      const seedB = isSeedLabel(b.node.id) ? 0 : 1;
+      return seedA - seedB || a.tier - b.tier;
+    });
+    type PlacedLabel = { node: MapNode; pos: Vec2; sx: number; sy: number; tier: number; side: 'right' | 'left' };
+    type Obstacle = { id: string | null; box: [number, number, number, number] };
+    const labelObstacles: Obstacle[] = accepted.map(item => ({
+      id: item.node.id,
+      box: [
+        item.sx - (TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6) * 1.05,
+        item.sy - (TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6) * 1.05,
+        item.sx + (TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6) * 1.05,
+        item.sy + (TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6) * 1.05,
+      ] as [number, number, number, number],
+    }));
+    const labelBoxes: [number, number, number, number][] = [];
+    const acceptedLabels: PlacedLabel[] = [];
     for (const item of labelCandidates) {
       const sx = item.pos[0] * this.scale + this.tx;
       const sy = item.pos[1] * this.scale + this.ty;
       const fontPx = TIER_FONT_PX[Math.min(item.tier, TIER_FONT_PX.length - 1)] ?? 12;
       const radiusPx = TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6;
-      const x0 = sx + radiusPx * 1.35;
-      const width = Math.max(14, item.node.name.length * fontPx * 1.02);
-      const box: [number, number, number, number] = [x0 - 2, sy - fontPx * 0.8, x0 + width + 2, sy + fontPx * 0.4];
-      const clash = acceptedLabels.some(
-        existing =>
-          box[0] < existing.box[2] && box[2] > existing.box[0] && box[1] < existing.box[3] && box[3] > existing.box[1],
-      );
-      if (clash && item.node.id !== this.view.selectedId && item.node.id !== currentId) continue;
-      acceptedLabels.push({ ...item, box });
+      const width = Math.max(14, item.node.name.length * fontPx * 1.04);
+      const trySide = (side: 'right' | 'left'): [number, number, number, number] | null => {
+        const x0 = side === 'right' ? sx + radiusPx * 1.3 : sx - radiusPx * 1.3 - width;
+        const box: [number, number, number, number] = [x0 - 2, sy - fontPx * 0.85, x0 + width + 2, sy + fontPx * 0.45];
+        for (const other of labelBoxes) {
+          if (box[0] < other[2] && box[2] > other[0] && box[1] < other[3] && box[3] > other[1]) return null;
+        }
+        for (const obstacle of labelObstacles) {
+          // 自己的点标不算障碍（标签本来就从自己点旁边开始）
+          if (obstacle.id === item.node.id) continue;
+          if (box[0] < obstacle.box[2] && box[2] > obstacle.box[0] && box[1] < obstacle.box[3] && box[3] > obstacle.box[1]) {
+            return null;
+          }
+        }
+        return box;
+      };
+      let side: 'right' | 'left' = 'right';
+      let box = trySide('right');
+      if (!box) {
+        side = 'left';
+        box = trySide('left');
+      }
+      if (!box) {
+        // 种子标签（选中/当前地点）必须画出来：实在没空间就放右侧，普通标签直接放弃
+        if (!isSeedLabel(item.node.id)) continue;
+        side = 'right';
+        const x0 = sx + radiusPx * 1.3;
+        box = [x0, sy - fontPx * 0.85, x0 + width + 2, sy + fontPx * 0.45];
+      }
+      labelBoxes.push(box);
+      acceptedLabels.push({ node: item.node, pos: item.pos, sx, sy, tier: item.tier, side });
       if (acceptedLabels.length >= 70) break;
     }
     for (const item of acceptedLabels) {
-      const radius = ((TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6) * 0.9) / Math.max(0.3, this.scale);
       const fontPx = TIER_FONT_PX[Math.min(item.tier, TIER_FONT_PX.length - 1)] ?? 12;
+      const radiusPx = TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6;
+      // 文字在缩放坐标系里，描边宽度按缩放倒数给 —— 否则 CSS 的 2px 会被放大成几十像素的气泡
+      const k = 1 / Math.max(0.3, this.scale);
       const text = el('text', {
-        x: item.pos[0] + radius * 1.35,
-        y: item.pos[1] + radius * 0.45,
-        'font-size': fontPx / Math.max(0.3, this.scale),
+        x: item.pos[0] + (item.side === 'left' ? -1 : 1) * radiusPx * 1.3 * k,
+        y: item.pos[1] + fontPx * 0.34 * k,
+        'font-size': fontPx * k,
+        'stroke-width': (item.tier <= 2 ? 2.6 : 2.2) * k,
         'font-weight': item.tier <= 2 ? '700' : '400',
+        'text-anchor': item.side === 'left' ? 'end' : 'start',
+        class: item.tier <= 2 ? 'dym-label dym-label-major' : 'dym-label',
       });
       text.textContent = item.node.name;
       nodeGroup.appendChild(text);
@@ -667,6 +784,18 @@ export class MapCanvas {
 
     this.wrap.dataset.dymScale = this.scale.toFixed(2);
     this.wrap.dataset.dymNodes = String(accepted.length);
+
+    // 顶部坐标条：只显示「当前选中的点」——名称 + 坐标（有高度再带上高度）
+    const selectedNode = this.view.selectedId ? graph.get(this.view.selectedId) : undefined;
+    if (selectedNode) {
+      const coord = (value: number) => String(Math.round(value * 10) / 10);
+      const altitude = selectedNode.altitude ? `　高度 ${(selectedNode.altitude / 1e8).toFixed(2)} 亿里` : '';
+      this.hud.textContent = `${selectedNode.name}　(${coord(selectedNode.xy[0])}, ${coord(selectedNode.xy[1])})${altitude}`;
+      this.hud.title = selectedNode.path;
+      this.hud.style.display = 'block';
+    } else {
+      this.hud.style.display = 'none';
+    }
   }
 
   // ── 交互 ────────────────────────────────────────────────────────────
@@ -807,7 +936,8 @@ export class MapCanvas {
   describeNode(node: MapNode): string {
     const altitude = node.altitude ? `｜高度 ${(node.altitude / 1e8).toFixed(2)} 亿里` : '';
     const status = node.status === 'unplaced' ? '｜待定位' : '';
-    return `层级 ${tierOf(node)}｜${KIND_LABELS[node.kind] ?? '地点'}｜(${node.xy[0].toFixed(1)}, ${node.xy[1].toFixed(1)})${altitude}${status}`;
+    const tier = node.tier ? `${tierOf(node)}（手动）` : String(tierOf(node));
+    return `层级 ${tier}｜${KIND_LABELS[node.kind] ?? '地点'}｜(${node.xy[0].toFixed(1)}, ${node.xy[1].toFixed(1)})${altitude}${status}`;
   }
 
   destroy(): void {

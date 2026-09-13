@@ -136,6 +136,11 @@ export interface RebuildOptions {
   previous?: Trail | null;
   /** 相邻点距离超过该值且层级跳跃不足时，视为坐标异常 */
   jumpLimit?: number;
+  /**
+   * 「AI 整理本会话地点」的规范化结果：原始地点串（normalize 后的 key）→ 干净路径 [→ 相对坐标]。
+   * 命中时直接按干净路径解析，绕过脏字符串；坐标只在当层没有更可靠来源时兜底。
+   */
+  pathFixes?: Trail['pathFixes'];
 }
 
 /** 全量重建轨迹 */
@@ -157,7 +162,9 @@ export function rebuildTrail(options: RebuildOptions): RebuildResult {
     const source = locationRaw ?? loose;
     if (!source && !info.mapVar?.坐标) return;
 
-    const pathText = normalize(source ?? '');
+    // 「AI 整理本会话地点」的规范化结果优先：命中就绕过脏字符串直接用干净路径
+    const fix = source ? options.pathFixes?.[normalize(source)] : undefined;
+    const pathText = fix?.path ?? normalize(source ?? '');
     const resolved = pathText ? graph.resolve(pathText, { create: true, source: 'trail' }) : null;
     if (resolved?.created) createdNodes++;
     const node: MapNode | null = resolved?.node ?? null;
@@ -187,6 +194,13 @@ export function rebuildTrail(options: RebuildOptions): RebuildResult {
       }
     } else if (node.source !== 'trail' || node.status === 'ok') {
       posSrc = 'lookup';
+    }
+    // 整理结果里带了相对坐标、且这一层没有更可靠的来源 → 用它兜底
+    if (posSrc === 'auto' && fix && Number.isFinite(Number(fix.x)) && Number.isFinite(Number(fix.y)) && !node.locked) {
+      xy = [Number(fix.x), Number(fix.y)];
+      posSrc = 'ai';
+      node.xy = xy;
+      if (node.status === 'unplaced' && node.source === 'trail') node.status = 'ok';
     }
 
     if (typeof info.mapVar?.高度 === 'number') node.altitude = info.mapVar.高度;
@@ -252,6 +266,28 @@ export function distance(a: Vec2, b: Vec2): number {
   const dx = a[0] - b[0];
   const dy = a[1] - b[1];
   return Math.sqrt(dx * dx + dy * dy);
+}
+
+/**
+ * 收集本会话出现过的**原始地点串**（去重、保序），供「AI 整理本会话地点」发给模型。
+ * 只取结构化来源（世界.当前地点 / 地图.层级）；正文兜底那种太脏，不进 AI 清单。
+ */
+export function collectRawLocations(messages: ChatMessageLike[], limit = 120): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const message of messages) {
+    if (!message || message.is_user) continue;
+    const info = extractMessageMapInfo(String(message.message ?? ''));
+    const raw = info.location ?? info.mapVar?.层级;
+    const text = typeof raw === 'string' ? raw.trim() : '';
+    if (!text) continue;
+    const key = normalize(text);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 /** 把轨迹里连续重复的坐标合并，供画线使用 */

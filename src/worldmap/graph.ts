@@ -13,6 +13,7 @@ import { BASE_MAP_SCHEMA, COORD_CENTER, COORD_MAX, COORD_MIN, LAYER_RADIUS, LOC_
 import {
   isBearingSegment,
   isImmortalRealmName,
+  isJunkLocationName,
   isTrivialFacility,
   looksLikeDescription,
   nodeId,
@@ -30,6 +31,10 @@ export const SEGMENT_ALIASES: Record<string, string> = {
   皇城: '宫城区',
   内城: '四区',
   百花谷: '百花坊',
+  // AI 偶尔把王朝与都城写成一段、或漏掉王朝层、或把「全国」当根 —— 都会建出平行树
+  大周神都: '神都',
+  大周: '大周仙朝',
+  全国: '',
 };
 
 /** 路径别名：把「世界书叫法」映射到「种子/已有底图的写法」，避免同一地点被建成两棵树
@@ -201,6 +206,36 @@ export class MapGraph {
   }
 
   /**
+   * 近名子节点：只在「双方都是轨迹自动生成且未确认」时认领（见 similarName）。
+   * 专治 AI 把同一处写出两种叫法（渡口茶棚/渡口茶摊）——不合并就会生成两个点，
+   * 轨迹在两点之间来回打乒乓，坐标书里也会多出一条重复条目。
+   */
+  findFuzzyChild(parentId: string | null, name: string): MapNode | undefined {
+    if (name.length < 3) return undefined;
+    for (const child of this.children(parentId)) {
+      if (child.source !== 'trail' || child.status !== 'unplaced' || child.locked) continue;
+      if (similarName(child.name, name)) return child;
+    }
+    return undefined;
+  }
+
+  /**
+   * 「大周神都」= 子级「大周仙朝」+ 孙级「神都」被 AI 拼成了一段。
+   * 尝试把这一段拆成两级认领到现有树上；只认领已存在的节点，绝不据此新建。
+   */
+  private claimMerged(parent: MapNode, segment: string): MapNode | undefined {
+    if (segment.length < 3) return undefined;
+    for (const child of this.children(parent.id)) {
+      if (segment === child.name || !segment.startsWith(child.name)) continue;
+      const rest = segment.slice(child.name.length);
+      if (!rest) continue;
+      const grand = this.findChild(child.id, rest) ?? this.findDescendantByName(child.id, rest, 1);
+      if (grand) return grand;
+    }
+    return undefined;
+  }
+
+  /**
    * 在 parentId 下面最多往下 skip 层找同名节点。
    * 游戏正文经常省略中间层级（例如只写「神都·慈宁宫东暖阁」，而底图里慈宁宫挂在 神都·宫城区 下），
    * 没有这一步就会在错误的位置重复建点。
@@ -308,7 +343,11 @@ export class MapGraph {
         if (deepest.depth >= 2 && looksLikeDescription(segment)) break;
         // 自动建点时不要"马厩/水井/某某客房"这种无意义小点 —— 直接停在上一级
         if ((source === 'trail' || source === 'ai') && isTrivialFacility(segment)) break;
-        const child = this.findChild(deepest.id, segment) ?? this.findDescendantByName(deepest.id, segment, 2);
+        const child =
+          this.findChild(deepest.id, segment) ??
+          this.findDescendantByName(deepest.id, segment, 2) ??
+          this.claimMerged(deepest, segment) ??
+          (source === 'trail' ? this.findFuzzyChild(deepest.id, segment) : undefined);
         if (child) {
           deepest = child;
           continue;
@@ -327,9 +366,15 @@ export class MapGraph {
     let created = false;
     for (const segment of segments) {
       if (parent && parent.depth + 1 >= MAX_AUTO_DEPTH) break;
+      // 首段整个是垃圾名（AI 把时刻/描述当成当前地点写进来）→ 这个地点串放弃，不建点
+      if (!parent && isJunkLocationName(segment)) return null;
       const parentId: string | null = parent ? parent.id : null;
-      const child: MapNode | undefined =
-        this.findChild(parentId, segment) ?? (parentId ? this.findDescendantByName(parentId, segment, 2) : undefined);
+      const child: MapNode | undefined = parent
+        ? this.findChild(parentId, segment) ??
+          this.findDescendantByName(parentId, segment, 2) ??
+          this.claimMerged(parent, segment) ??
+          (source === 'trail' ? this.findFuzzyChild(parentId, segment) : undefined)
+        : undefined;
       if (child) {
         parent = child;
         continue;
@@ -343,7 +388,11 @@ export class MapGraph {
     return parent ? { node: parent, created, segments } : null;
   }
 
-  /** 自动落点：围绕父节点的向日葵螺旋；半径自适应父节点的局部格子 */
+  /**
+   * 自动落点：围绕父节点的向日葵螺旋；半径自适应父节点的局部格子。
+   * 名字里带方位词的（「车州渡西南三百里」「官道东段」）朝那个方向落 —— 方位是正文里
+   * 最可靠的免费信息，比哈希随机角靠谱得多；距离数字不可信（口径夸张约千倍），只取方向。
+   */
   private autoPlace(parent: MapNode | null, name: string): Vec2 {
     const depth = parent ? parent.depth + 1 : 0;
     const base = LAYER_RADIUS[Math.min(depth, LAYER_RADIUS.length - 1)] || 40;
@@ -351,8 +400,11 @@ export class MapGraph {
     const radius = Math.max(0.35, Math.min(base, cell * 0.42));
     const siblings = this.children(parent?.id ?? null).length;
     const golden = 2.399963229728653;
-    const angle = siblings * golden + (hashUnit(name) - 0.5) * 0.6;
-    const distance = radius * (0.5 + 0.5 * Math.sqrt((siblings % 7) / 7 + 0.2));
+    const jitter = (hashUnit(name) - 0.5) * 0.5;
+    const bearing = bearingOf(name);
+    const angle = bearing ? Math.atan2(bearing[1], bearing[0]) + jitter : siblings * golden + (hashUnit(name) - 0.5) * 0.6;
+    // 方位点稍微离父点远一点，避免压在父点头上；普通点维持原来的疏密节奏
+    const distance = radius * (bearing ? 1.15 : 0.5 + 0.5 * Math.sqrt((siblings % 7) / 7 + 0.2));
     const center: Vec2 = parent ? parent.xy : COORD_CENTER;
     return [clamp(center[0] + Math.cos(angle) * distance), clamp(center[1] + Math.sin(angle) * distance)];
   }
@@ -419,6 +471,60 @@ function hashUnit(text: string): number {
   return (hash % 1000) / 1000;
 }
 
+/** 八方位向量；四字复合方位先查，单字后查（「东南」优先于「南」） */
+const BEARINGS: [string, Vec2][] = [
+  ['东南', [0.707, 0.707]],
+  ['西南', [-0.707, 0.707]],
+  ['西北', [-0.707, -0.707]],
+  ['东北', [0.707, -0.707]],
+  ['东', [1, 0]],
+  ['南', [0, 1]],
+  ['西', [-1, 0]],
+  ['北', [0, -1]],
+];
+
+/** 从地名里解析方位词（「渡口西南三百里」→ 西南）；没有就返回 null */
+export function bearingOf(name: string): Vec2 | null {
+  for (const [key, vec] of BEARINGS) {
+    if (name.includes(key)) return vec;
+  }
+  return null;
+}
+
+/**
+ * 名字近似（编辑距离 ≤ 1，如「渡口茶棚」vs「渡口茶摊」）→ 大概率是 AI 对同一处的两种写法。
+ * 只对双方都是轨迹自动生成且未确认的节点做合并；已确认/人工/AI 铺的点绝不误伤。
+ */
+export function similarName(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (!a || !b || Math.abs(a.length - b.length) > 1) return false;
+  if (a.length === b.length) {
+    let diff = 0;
+    for (let index = 0; index < a.length; index++) {
+      if (a[index] !== b[index]) {
+        diff++;
+        if (diff > 1) return false;
+      }
+    }
+    return diff === 1;
+  }
+  const [shorter, longer] = a.length < b.length ? [a, b] : [b, a];
+  let i = 0;
+  let j = 0;
+  let skipped = false;
+  while (i < shorter.length && j < longer.length) {
+    if (shorter[i] === longer[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    if (skipped) return false;
+    skipped = true;
+    j++;
+  }
+  return true;
+}
+
 export function toBaseMap(graph: MapGraph, previous?: Partial<BaseMap>): BaseMap {
   return {
     schemaVersion: BASE_MAP_SCHEMA,
@@ -442,6 +548,7 @@ export function tierOf(node: MapNode): number {
 export interface SanitizeReport {
   removedBearing: number;
   removedImmortal: number;
+  removedJunk: number;
   merged: number;
   total: number;
 }
@@ -450,11 +557,13 @@ export interface SanitizeReport {
  * 底图清洗（每次加载/保存前都跑）：
  *   1. 剔除纯方位节点（西部/东南部…），其子节点上提到祖父，路径重算
  *   2. 剔除仙界节点及其整棵子树 —— 当前舞台是玄天界
- *   3. 合并重复节点：同名 + 路径互相包含 + 坐标几乎重合 → 只留一个，子节点迁移
- *   4. 重算 id/path/depth（上提与合并都会改变层级）
+ *   3. 剔除「垃圾名」节点（名字里带逗号/整串是时刻/离谱长名）——AI 把描述写进地名、
+ *      把时刻当地点都会在这里清掉；种子/预设/人工/锁定一律不碰
+ *   4. 合并重复节点：同名 + 路径互相包含 + 坐标几乎重合 → 只留一个，子节点迁移
+ *   5. 重算 id/path/depth（上提与合并都会改变层级）
  */
 export function sanitizeNodes(input: MapNode[]): { nodes: MapNode[]; report: SanitizeReport } {
-  const report: SanitizeReport = { removedBearing: 0, removedImmortal: 0, merged: 0, total: input.length };
+  const report: SanitizeReport = { removedBearing: 0, removedImmortal: 0, removedJunk: 0, merged: 0, total: input.length };
   const originalChildren = new Map<string, MapNode[]>();
   for (const node of input) {
     const key = node.parentId ?? '^';
@@ -469,6 +578,16 @@ export function sanitizeNodes(input: MapNode[]): { nodes: MapNode[]; report: San
   for (const node of input) {
     effectiveParent.set(node.id, node.parentId ?? null);
     if (isImmortalRealmName(node.name)) immortal.add(node.id);
+    // 垃圾名：只清自动生成的（轨迹/AI），种子、预设、人工、锁定一律不碰
+    if (
+      !node.locked &&
+      (node.source === 'trail' || node.source === 'ai') &&
+      node.name &&
+      isJunkLocationName(node.name)
+    ) {
+      removed.add(node.id);
+      report.removedJunk++;
+    }
   }
   let grew = true;
   while (grew) {
@@ -489,6 +608,13 @@ export function sanitizeNodes(input: MapNode[]): { nodes: MapNode[]; report: San
     const grand = effectiveParent.get(node.id) ?? null;
     for (const child of originalChildren.get(node.id) ?? []) {
       if (!immortal.has(child.id)) effectiveParent.set(child.id, grand);
+    }
+  }
+  // 垃圾名节点与方位节点一样：自己消失，子节点上提
+  for (const id of [...removed]) {
+    const grand = effectiveParent.get(id) ?? null;
+    for (const child of originalChildren.get(id) ?? []) {
+      if (!immortal.has(child.id) && !removed.has(child.id)) effectiveParent.set(child.id, grand);
     }
   }
   report.removedImmortal = immortal.size;

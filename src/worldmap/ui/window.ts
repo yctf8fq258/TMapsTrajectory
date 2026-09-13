@@ -1,12 +1,13 @@
 /**
  * 悬浮窗外壳 + 抽屉 + 时间轴。
  * 交互范式照角色卡卡里已有的「世界舆图 MVU 悬浮状态栏」：固定定位、拖标题栏、右下角缩放、
- * 贴边停靠、最小化成悬浮球、布局写 localStorage、pagehide 自清理。
+ * 贴边停靠、关闭后由快捷回复栏按钮重开、布局写 localStorage、pagehide 自清理。
  */
 import type { BaseMap, DrawerTab, LayoutState, MapNode, MapSettings, TrailPoint } from '../types.js';
 import { ID_PREFIX } from '../types.js';
 import type { MapCanvas } from './canvas.js';
-import { KIND_COLORS, KIND_LABELS, escapeHtml, ensureStyle } from './theme.js';
+import { COMPASS, KIND_COLORS, KIND_LABELS, UI, escapeHtml, ensureStyle, svgIcon } from './theme.js';
+import type { IconShape } from './theme.js';
 
 export interface WindowActions {
   onToggleLayer: (key: 'showTrail' | 'showLinks' | 'showRegions' | 'showUnplaced' | 'trailCityOnly', value: boolean) => void;
@@ -22,6 +23,8 @@ export interface WindowActions {
   onDeleteNode: (id: string) => void;
   onAddChild: (id: string | null, name: string) => void;
   onToggleLock: (id: string) => void;
+  /** 手动指定显示层级（1~5）；null = 恢复按类型自动 */
+  onSetNodeTier: (id: string, tier: number | null) => void;
   onScatterUnplaced: () => void;
   onTimeline: (index: number | null) => void;
   onJumpToPoint: (point: TrailPoint) => void;
@@ -38,6 +41,20 @@ export interface WindowActions {
   onExportTrail: () => void;
   onImportBaseMapText: (text: string, report: (message: string) => void) => void;
   onSaveSettings: (patch: Partial<MapSettings>) => void;
+  /** 生成并挂载《世界舆图·坐标表》（显式点击 = 授权动绑定） */
+  onMountCoordBook: () => void;
+  /** 只解除绑定，书保留 */
+  onUnmountCoordBook: () => void;
+  /** 不碰书内容，只把绑定重写一遍并读回校验（书已同步却显示未挂载时用） */
+  onRemountCoordBook: () => void;
+  /** 解绑 + 删书（UI 层两步确认） */
+  onDeleteCoordBook: () => void;
+  /** 手动触发一次底图 → 世界书同步 */
+  onSyncCoordBook: () => void;
+  /** AI 整理本会话历史地点（规范化路径 + 非设定点给相对坐标），整理完自动重建轨迹 */
+  onAiFixHistory: () => void;
+  /** 本回合态势预览原文 */
+  onGeoPreview: () => string;
 }
 
 export interface WindowData {
@@ -57,19 +74,32 @@ export interface WindowData {
   canRedo: boolean;
   timelineIndex: number | null;
   presetError?: string;
+  /** 坐标世界书挂载状态一行字（状态徽章） */
+  geoStatus?: string;
 }
 
-const TABS: { key: DrawerTab; label: string }[] = [
-  { key: 'layers', label: '图层' },
-  { key: 'places', label: '地点' },
-  { key: 'edit', label: '编辑' },
-  { key: 'trail', label: '轨迹' },
-  { key: 'settings', label: '设置' },
+const TABS: { key: DrawerTab; label: string; icon: IconShape }[] = [
+  { key: 'layers', label: '图层', icon: UI.layers },
+  { key: 'places', label: '地点', icon: UI.pin },
+  { key: 'edit', label: '编辑', icon: UI.pencil },
+  { key: 'trail', label: '轨迹', icon: UI.route },
+  { key: 'settings', label: '设置', icon: UI.sliders },
 ];
+
+/** 轻提示：走宿主的 toastr（酒馆页面右上角），没有就落控制台 */
+function toast(kind: 'success' | 'info' | 'warning' | 'error', message: string): void {
+  try {
+    const host = window.parent && window.parent !== window ? window.parent : window;
+    const fn = (host as unknown as { toastr?: Record<string, (message: string, title?: string) => void> }).toastr?.[kind];
+    if (typeof fn === 'function') fn(message, '世界舆图');
+    else window.console.log('[世界舆图]', kind, message);
+  } catch {
+    window.console.log('[世界舆图]', message);
+  }
+}
 
 export class MapWindow {
   root: HTMLElement;
-  launcher: HTMLElement;
   private drawer!: HTMLElement;
 
   private drawerHandle!: HTMLButtonElement;
@@ -100,11 +130,6 @@ export class MapWindow {
     this.root = doc.createElement('div');
     this.root.id = `${ID_PREFIX}root`;
     this.root.className = 'worldmap-root';
-    this.launcher = doc.createElement('div');
-    this.launcher.id = `${ID_PREFIX}launcher`;
-    this.launcher.className = 'dym-launcher';
-    this.launcher.title = '世界舆图';
-    this.launcher.innerHTML = '舆<span class="dym-launcher-dot"></span>';
     this.build();
     this.applyLayout(data.layout);
     this.bindChrome();
@@ -115,14 +140,14 @@ export class MapWindow {
     // 标题栏
     const bar = doc.createElement('div');
     bar.className = 'dym-titlebar';
-    bar.innerHTML = `<span class="dym-title">世界舆图</span><span class="dym-badge" data-role="badge">—</span>
+    bar.innerHTML = `<span class="dym-logo">${svgIcon(COMPASS, 15, 1.8)}</span><span class="dym-title">世界舆图</span><span class="dym-badge" data-role="badge">—</span>
       <span class="dym-rail-hint">点开</span>
       <span class="dym-spacer"></span>
       <div class="dym-actions">
-        <button data-act="drawer" title="收起 / 展开右侧栏">»</button>
-        <button data-act="locate" title="定位到当前地点">⌖</button>
-        <button data-act="fit" title="全图">⤢</button>
-        <button data-act="close" title="关闭（点脚本按钮可重新打开）">×</button>
+        <button data-act="drawer" title="收起 / 展开右侧栏">${svgIcon(UI.panelRight, 15)}</button>
+        <button data-act="locate" title="定位到当前地点">${svgIcon(UI.locate, 15)}</button>
+        <button data-act="fit" title="全图">${svgIcon(UI.fit, 14)}</button>
+        <button data-act="close" title="关闭（点脚本按钮可重新打开）">${svgIcon(UI.close, 15)}</button>
       </div>`;
     this.badge = bar.querySelector('[data-role=badge]') as HTMLElement;
 
@@ -136,7 +161,7 @@ export class MapWindow {
     this.breadcrumb.className = 'dym-breadcrumb';
     const zoomCtl = doc.createElement('div');
     zoomCtl.className = 'dym-zoomctl';
-    zoomCtl.innerHTML = `<button data-act="zoom-in">＋</button><button data-act="zoom-out">－</button>`;
+    zoomCtl.innerHTML = `<button data-act="zoom-in" title="放大">${svgIcon(UI.plus, 14)}</button><button data-act="zoom-out" title="缩小">${svgIcon(UI.minus, 14)}</button>`;
     const legend = doc.createElement('div');
     legend.className = 'dym-legend';
     legend.innerHTML = (['realm', 'region', 'power', 'city', 'site'] as const)
@@ -152,7 +177,7 @@ export class MapWindow {
     this.drawerHandle.className = 'dym-drawer-toggle';
     this.drawerHandle.type = 'button';
     this.drawerHandle.title = '收起 / 展开右侧栏';
-    this.drawerHandle.textContent = '›';
+    this.drawerHandle.innerHTML = svgIcon(UI.chevRight, 12);
     this.drawerHandle.addEventListener('click', () => this.toggleDrawer());
     const tabs = doc.createElement('div');
     tabs.className = 'dym-tabs';
@@ -160,7 +185,8 @@ export class MapWindow {
     panes.className = 'dym-panes';
     for (const tab of TABS) {
       const button = doc.createElement('button');
-      button.textContent = tab.label;
+      button.innerHTML = `${svgIcon(tab.icon, 17)}<span>${tab.label}</span>`;
+      button.title = tab.label;
       button.dataset.tab = tab.key;
       button.addEventListener('click', () => this.setTab(tab.key));
       tabs.appendChild(button);
@@ -230,11 +256,11 @@ export class MapWindow {
     const layers = this.panes.get('layers') as HTMLElement;
     layers.innerHTML = `
       <div class="dym-switches">
-        <label><input type="checkbox" data-layer="showTrail"> 显示轨迹</label>
-        <label><input type="checkbox" data-layer="trailCityOnly"> 轨迹只连到市级（去掉城内蜘蛛网）</label>
-        <label><input type="checkbox" data-layer="showLinks"> 显示层级连线</label>
-        <label><input type="checkbox" data-layer="showRegions"> 显示区域轮廓（州/域用虚线围范围）</label>
-        <label><input type="checkbox" data-layer="showUnplaced"> 显示待定位节点</label>
+        <label><input type="checkbox" data-layer="showTrail"><span>显示轨迹</span><span class="dym-track" aria-hidden="true"></span></label>
+        <label><input type="checkbox" data-layer="trailCityOnly"><span>轨迹只连到市级（去掉城内蜘蛛网）</span><span class="dym-track" aria-hidden="true"></span></label>
+        <label><input type="checkbox" data-layer="showLinks"><span>显示层级连线</span><span class="dym-track" aria-hidden="true"></span></label>
+        <label><input type="checkbox" data-layer="showRegions"><span>显示区域轮廓（州/域用虚线围范围）</span><span class="dym-track" aria-hidden="true"></span></label>
+        <label><input type="checkbox" data-layer="showUnplaced"><span>显示待定位节点</span><span class="dym-track" aria-hidden="true"></span></label>
       </div>
       <div class="dym-row"><button class="dym-btn" data-act="scatter">环形铺开待定位节点</button></div>
       <div class="dym-hint" data-role="layer-hint"></div>`;
@@ -257,25 +283,41 @@ export class MapWindow {
     // ── 编辑 ──
     const edit = this.panes.get('edit') as HTMLElement;
     edit.innerHTML = `
-      <div class="dym-switches"><label><input type="checkbox" data-role="edit-mode"> 编辑模式（拖动节点改位置）</label></div>
+      <div class="dym-switches"><label><input type="checkbox" data-role="edit-mode"><span>编辑模式（拖动节点改位置）</span><span class="dym-track" aria-hidden="true"></span></label></div>
       <div class="dym-row">
         <button class="dym-btn" data-act="undo">撤销</button>
         <button class="dym-btn" data-act="redo">重做</button>
       </div>
-      <div class="dym-hint" data-role="selected-info">未选中节点。</div>
-      <div class="dym-field"><label>名称</label><input type="text" data-role="node-name"></div>
-      <div class="dym-field"><label>X</label><input type="number" step="0.1" data-role="node-x"></div>
-      <div class="dym-field"><label>Y</label><input type="number" step="0.1" data-role="node-y"></div>
-      <div class="dym-row"><button class="dym-btn" data-act="apply-xy">应用坐标</button></div>
-      <div class="dym-field"><label>新地点</label><input type="text" data-role="child-name" placeholder="新子地点名称"></div>
-      <div class="dym-row">
-        <button class="dym-btn" data-act="add-child">加子节点</button>
-        <button class="dym-btn" data-act="add-sibling">加同级</button>
-        <button class="dym-btn" data-act="add-free">在视图中心新增</button>
+      <div class="dym-card">
+        <div class="dym-sect">选中节点</div>
+        <div class="dym-hint" data-role="selected-info">未选中节点。</div>
+        <div class="dym-field"><label>名称</label><input type="text" data-role="node-name"></div>
+        <div class="dym-field"><label>X</label><input type="number" step="0.1" data-role="node-x"></div>
+        <div class="dym-field"><label>Y</label><input type="number" step="0.1" data-role="node-y"></div>
+        <div class="dym-field"><label>显示层级</label>
+          <select data-role="node-tier">
+            <option value="">自动（按类型推导）</option>
+            <option value="1">1 · 界域 / 大域</option>
+            <option value="2">2 · 地域 / 地貌</option>
+            <option value="3">3 · 城池 / 宗级势力</option>
+            <option value="4">4 · 具体地点</option>
+            <option value="5">5 · 房间</option>
+          </select>
+        </div>
+        <div class="dym-row"><button class="dym-btn dym-primary" data-act="apply-xy">应用坐标</button></div>
+      </div>
+      <div class="dym-card">
+        <div class="dym-sect">新增地点</div>
+        <div class="dym-field"><label>名称</label><input type="text" data-role="child-name" placeholder="新子地点名称"></div>
+        <div class="dym-row">
+          <button class="dym-btn" data-act="add-child">加子节点</button>
+          <button class="dym-btn" data-act="add-sibling">加同级</button>
+          <button class="dym-btn" data-act="add-free">在视图中心新增</button>
+        </div>
       </div>
       <div class="dym-row">
         <button class="dym-btn" data-act="toggle-lock">锁定 / 解锁</button>
-        <button class="dym-btn" data-act="delete-node">删除节点</button>
+        <button class="dym-btn dym-danger" data-act="delete-node">删除节点</button>
       </div>
       <div class="dym-hint">
         增点：<b>开启编辑模式后，在画布空白处右键或双击</b>即可在那里新增一个地点（会挂在当前下钻的节点下）。<br>
@@ -294,6 +336,11 @@ export class MapWindow {
       this.actions.onMoveSelected([x, y]);
     };
     edit.querySelector('[data-act=apply-xy]')?.addEventListener('click', applyXy);
+    edit.querySelector('[data-role=node-tier]')?.addEventListener('change', event => {
+      if (!this.data.selectedId) return;
+      const raw = (event.target as HTMLSelectElement).value;
+      this.actions.onSetNodeTier(this.data.selectedId, raw === '' ? null : Number(raw));
+    });
     const childName = () => (edit.querySelector('[data-role=child-name]') as HTMLInputElement).value.trim();
     edit.querySelector('[data-act=add-child]')?.addEventListener('click', () => {
       const name = childName() || '新地点';
@@ -339,10 +386,17 @@ export class MapWindow {
         <button class="dym-btn" data-act="rebuild">从聊天记录重算</button>
         <button class="dym-btn" data-act="clear-hidden">恢复全部显示</button>
       </div>
+      <div class="dym-row">
+        <button class="dym-btn dym-primary" data-act="ai-fix-history">AI 整理本会话地点</button>
+      </div>
+      <div class="dym-hint">聊天中途才装插件、或 AI 写的地点串太脏（混描述/时刻/拼层级）？点它把本会话出现过的
+        原始地点串发给模型规范化成干净路径，玩出来的非设定地点顺带按方位给相对坐标。
+        从头开始玩的新档不需要；整理结果存在本会话的轨迹数据里，重算时自动套用。</div>
       <div class="dym-hint" data-role="trail-hint"></div>
       <ul class="dym-list" data-role="trail-list"></ul>`;
     trail.querySelector('[data-act=rebuild]')?.addEventListener('click', () => this.actions.onRebuildTrail());
     trail.querySelector('[data-act=clear-hidden]')?.addEventListener('click', () => this.actions.onClearHiddenPoints());
+    trail.querySelector('[data-act=ai-fix-history]')?.addEventListener('click', () => this.actions.onAiFixHistory());
 
     // ── 设置 ──
     const settings = this.panes.get('settings') as HTMLElement;
@@ -353,7 +407,7 @@ export class MapWindow {
         <div class="dym-field"><label>密钥</label>
           <span class="dym-pw">
             <input type="password" data-set="key" placeholder="留空表示接口不需要密钥" autocomplete="off">
-            <button type="button" data-act="toggle-key" title="显示 / 隐藏密钥">👁</button>
+            <button type="button" data-act="toggle-key" title="显示 / 隐藏密钥">${svgIcon(UI.eye, 14)}</button>
           </span>
         </div>
         <div class="dym-field"><label>模型</label>
@@ -362,6 +416,7 @@ export class MapWindow {
         <div class="dym-field"><label>自定义</label><input type="text" data-set="model" placeholder="也可以直接手填模型名"></div>
         <div class="dym-row"><button class="dym-btn" data-act="fetch-models">获取模型列表</button>
           <button class="dym-btn" data-act="test-api">测试连接</button></div>
+        <div class="dym-api-result" data-role="api-result"></div>
         <div class="dym-field"><label>上限</label><input type="number" data-set="maxTokens" step="1024"></div>
         <div class="dym-hint">上限 = <b>一次最多让模型写多少 token</b>（只是输出长度，不影响读进去的世界书）。
           生成底图正常十来条资料，<b>16384 够用</b>；要是哪天一次喂 100 多条（比如从控制台跑 <code>__worldMap.runLayout('all')</code>），
@@ -376,8 +431,15 @@ export class MapWindow {
         <div class="dym-hint">
           读世界书里的<b>地点类条目</b>（《玄天界介绍》《地点：X》这类总纲），一次性给出大域、主要势力、
           主要城池的坐标；已经人工拖过的点会跳过，不会覆盖。<br>
+          定位顺序：<b>方位补充表（主）→ 坐标骨架 → 世界书条目（校验与补漏）</b>；
+          条目与补充表冲突时以补充表为准，冲突会写进节点的备注。<br>
           想要更细的城内地点，在地图上双击下钻后<b>手动加</b>更稳（AI 细化很容易编出无意义的小点）。
         </div>
+        <div class="dym-field dym-col"><label>方位补充表（先按它落点；格式：地名-方位-距离(亿里)，可写相对线索）</label>
+          <textarea data-set="layoutSupplement" rows="9" placeholder="留空 = 不用补充表，纯按世界书条目定位"></textarea>
+        </div>
+        <div class="dym-hint">改完记得点「保存设置」再生成。示例见 <code>docs/底图补充.txt</code>；
+          相对线索的写法：<code>距某地N</code>、<code>向某方向N到某地</code>、<code>正上/正下方</code>、<code>宽N</code>。</div>
         <div class="dym-row"><button class="dym-btn dym-primary" data-act="layout-world">生成底图</button></div>
         <div class="dym-hint">生成结果（用了哪些条目、新增/移动/丢弃多少、模型原始回复）会显示在下面这块，同时抄一份到「导出 / 导入」的文本框里方便留存。</div>
         <div class="dym-report" data-role="layout-report">还没跑过地图布局 AI。</div>
@@ -410,6 +472,54 @@ export class MapWindow {
           <button class="dym-btn" data-act="pick-file">选文件</button>
         </div>
         <div class="dym-hint" data-role="io-hint">导出的文件会存到浏览器的下载目录；不确定的话直接用「复制」再粘到别处。</div>
+      </details>
+
+      <details class="dym-sec"><summary>坐标世界书与地理态势</summary>
+        <div class="dym-hint">
+          把底图同步成插件<b>自建</b>的世界书《世界舆图·坐标表》并挂到角色卡：<b>原世界书一个字不动</b>。
+          正文提到某地才注入该地坐标（绿灯，不提不花 token）；每回合另注入一段「当前位置 + 周边 + 地界规则」。
+          同步是<b>单向</b>的（底图 → 世界书）：在世界书里手改的坐标会被下次同步覆盖。
+        </div>
+        <div class="dym-row"><span class="dym-tag" data-role="geo-mount">…</span></div>
+        <div class="dym-row">
+          <button class="dym-btn dym-primary" data-act="geo-mount">生成并挂载坐标世界书</button>
+          <button class="dym-btn" data-act="geo-sync">立即同步</button>
+        </div>
+        <div class="dym-hint">「立即同步」= 按当前底图与设置**整体重写**《世界舆图·坐标表》：
+          蓝灯的总纲/移动规则/叙事规则 3 条 + 当前已确认的地点条目（待定位的虚线圈本来就不进书）。
+          切换会话后条目数量变化，多半是新会话的轨迹产生了新地点 —— 想清掉旧档地名就点下面的清理按钮。</div>
+        <div class="dym-row">
+          <button class="dym-btn" data-act="geo-remount">修复挂载（重新挂）</button>
+          <button class="dym-btn" data-act="geo-unmount">卸载（解除绑定）</button>
+          <button class="dym-btn dym-danger" data-act="geo-delete">删除坐标世界书</button>
+        </div>
+        <div class="dym-hint">「修复挂载」不碰书内容，只把角色卡上的绑定重写一遍并读回校验——
+          状态显示「未挂载」或正文读不到坐标条目时点它（挂载接口报错、被别的脚本改了绑定都靠它恢复）。</div>
+        <div class="dym-hint">挂载对齐成熟 DLC 的做法：追加为角色卡<b>附加世界书</b>（不碰主书），写完读回校验；
+          卸载只解绑不删书。「删除」才是连书一起删（两步确认）。</div>
+        <div class="dym-switches">
+          <label><input type="checkbox" data-gset="coordEnabled"><span>底图变更后自动同步进世界书</span><span class="dym-track" aria-hidden="true"></span></label>
+          <label><input type="checkbox" data-gset="coordTier4"><span>收录城内要点（tier 4：某宫某阁这类）</span><span class="dym-track" aria-hidden="true"></span></label>
+          <label><input type="checkbox" data-gset="geoEnabled"><span>每回合注入「地理态势」（关闭 = 只靠世界书条目）</span><span class="dym-track" aria-hidden="true"></span></label>
+          <label><input type="checkbox" data-gset="geoBounds"><span>注入地界规则（非本地势力需有理由才能生事）</span><span class="dym-track" aria-hidden="true"></span></label>
+          <label><input type="checkbox" data-gset="geoJump"><span>位移超限时附「远行提示」</span><span class="dym-track" aria-hidden="true"></span></label>
+        </div>
+        <div class="dym-hint">坐标书里只有「设定里的地方」和确认过的城内要点；轨迹自动产生的待定位虚线圈本来就不进书。</div>
+        <div class="dym-row">
+          <button class="dym-btn" data-act="geo-preview">预览本回合态势（写入下方文本框）</button>
+        </div>
+        <div class="dym-field dym-col"><label>人物移动规则（蓝灯条目，随坐标书常驻注入）</label>
+          <textarea data-gset-text="movementRules" rows="7" placeholder="各境界日行速度与移动方式…（保存后会作为 [舆图]人物移动规则 写进坐标书）"></textarea>
+        </div>
+        <div class="dym-switches"><label><input type="checkbox" data-gset="coordMovementOn"><span>把人物移动规则写进坐标书</span><span class="dym-track" aria-hidden="true"></span></label></div>
+        <div class="dym-field dym-col"><label>叙事地理规则（蓝灯条目：坐标权威 + 远方事件隔离）</label>
+          <textarea data-gset-text="narrativeRules" rows="7" placeholder="远方事件不串场、坐标数据优先于世界书条目方位…（保存后会作为 [舆图]叙事地理规则 写进坐标书）"></textarea>
+        </div>
+        <div class="dym-switches"><label><input type="checkbox" data-gset="coordNarrativeOn"><span>把叙事地理规则写进坐标书</span><span class="dym-track" aria-hidden="true"></span></label></div>
+        <div class="dym-hint">两段文本都<b>已预填默认内容</b>，直接在框里改即可（失焦即保存，改完点「立即同步」写进书）。
+          距离换算以总纲为准（1 坐标格 ≈ 15 亿里）；它们放蓝灯是为了「写剧情时一定在场」，
+          且生效范围恰好等于坐标书本身：卸载坐标书，规则随之消失，不会变成死条目。</div>
+        <div class="dym-hint" data-role="geo-hint"></div>
       </details>
 
       <details class="dym-sec"><summary>其他</summary>
@@ -472,7 +582,48 @@ export class MapWindow {
     });
     settings.querySelector('[data-act=pick-file]')?.addEventListener('click', () => this.fileInput.click());
     settings.querySelector('[data-act=export-trail]')?.addEventListener('click', () => this.actions.onExportTrail());
+
+    // ── 坐标世界书与地理态势 ──
+    settings.querySelector('[data-act=geo-mount]')?.addEventListener('click', () => this.actions.onMountCoordBook());
+    settings.querySelector('[data-act=geo-sync]')?.addEventListener('click', () => this.actions.onSyncCoordBook());
+    settings.querySelector('[data-act=geo-remount]')?.addEventListener('click', () => this.actions.onRemountCoordBook());
+    settings.querySelector('[data-act=geo-unmount]')?.addEventListener('click', () => this.actions.onUnmountCoordBook());
+    // 删书是破坏性动作：两步确认（隐藏 iframe 里弹不了 confirm）
+    const geoDelete = settings.querySelector('[data-act=geo-delete]') as HTMLButtonElement;    geoDelete.addEventListener('click', () => {
+      if (geoDelete.dataset.armed === '1') {
+        geoDelete.dataset.armed = '';
+        geoDelete.textContent = '删除坐标世界书';
+        this.actions.onDeleteCoordBook();
+        return;
+      }
+      geoDelete.dataset.armed = '1';
+      geoDelete.textContent = '再点一次确认删除（解绑 + 删书）';
+      setTimeout(() => {
+        if (geoDelete.dataset.armed === '1') {
+          geoDelete.dataset.armed = '';
+          geoDelete.textContent = '删除坐标世界书';
+        }
+      }, 4000);
+    });
+    settings.querySelector('[data-act=geo-preview]')?.addEventListener('click', () => {
+      const text = this.actions.onGeoPreview();
+      this.setIo(text, '这是「地理态势」注入的原文（每回合按当前坐标现算，只在下一轮生成时进入模型上下文）。');
+    });
+    settings.querySelectorAll<HTMLInputElement>('[data-gset]').forEach(input => {
+      input.addEventListener('change', () => this.collectGeoSettings());
+    });
+    // 规则文本框：失焦即保存（读当前 coordBook 全量、只覆盖对应字段，两个框互不覆盖）
+    const movementInput = settings.querySelector('[data-gset-text=movementRules]') as HTMLTextAreaElement;
+    movementInput.addEventListener('change', () => {
+      this.saveCoordBookField('movementRules', movementInput.value, '移动规则已保存。下次同步（挂载后自动 / 点「立即同步」）会写进坐标书蓝灯条目。');
+    });
+    const narrativeInput = settings.querySelector('[data-gset-text=narrativeRules]') as HTMLTextAreaElement;
+    narrativeInput.addEventListener('change', () => {
+      this.saveCoordBookField('narrativeRules', narrativeInput.value, '叙事规则已保存。下次同步（挂载后自动 / 点「立即同步」）会写进坐标书蓝灯条目。');
+    });
+
     this.fillSettings();
+    this.fillGeoSettings();
   }
 
   private ioPane(): HTMLElement {
@@ -516,6 +667,15 @@ export class MapWindow {
     if (area) area.value = text;
     this.setIoHint(hint);
     this.setTab('settings');
+  }
+
+  /** 轻操作（获取模型/测试连接）的就地结果：写在按钮下面的小结果条里，不滚动、不跳页签 */
+  showApiResult(text: string): void {
+    const box = this.ioPane().querySelector('[data-role=api-result]') as HTMLElement | null;
+    if (box) {
+      box.textContent = text;
+      box.scrollTop = 0;
+    }
   }
 
   private async copyIo(): Promise<void> {
@@ -568,11 +728,88 @@ export class MapWindow {
       maxTokens: api?.maxTokens,
       temperature: api?.temperature,
       presetUrl: this.data.settings?.presetUrl,
+      layoutSupplement: this.data.settings?.layoutSupplement ?? '',
     };
     pane.querySelectorAll<HTMLInputElement>('[data-set]').forEach(input => {
+      if (document.activeElement === input) return;
       const value = map[input.dataset.set as string];
       input.value = value === undefined || value === null ? '' : String(value);
     });
+  }
+
+  /** 坐标世界书 / 态势注入的开关回填 */
+  private fillGeoSettings(): void {
+    const pane = this.panes.get('settings') as HTMLElement;
+    const geo = this.data.settings?.geoContext;
+    const book = this.data.settings?.coordBook;
+    const values: Record<string, boolean> = {
+      coordEnabled: Boolean(book?.enabled),
+      coordTier4: book?.includeTier4 !== false,
+      coordMovementOn: book?.movementRulesEnabled !== false,
+      coordNarrativeOn: book?.narrativeRulesEnabled !== false,
+      geoEnabled: geo?.enabled !== false,
+      geoBounds: geo?.enforceBounds !== false,
+      geoJump: geo?.jumpNotice !== false,
+    };
+    pane.querySelectorAll<HTMLInputElement>('[data-gset]').forEach(input => {
+      const value = values[input.dataset.gset as string];
+      if (typeof value === 'boolean') input.checked = value;
+    });
+    const movement = pane.querySelector('[data-gset-text=movementRules]') as HTMLTextAreaElement | null;
+    if (movement && document.activeElement !== movement) movement.value = book?.movementRules ?? '';
+    const narrative = pane.querySelector('[data-gset-text=narrativeRules]') as HTMLTextAreaElement | null;
+    if (narrative && document.activeElement !== narrative) narrative.value = book?.narrativeRules ?? '';
+  }
+
+  /** 规则文本框保存：读当前 coordBook 全量、只覆盖指定字段（两个文本框互不覆盖、不冲掉复选框） */
+  private saveCoordBookField(field: 'movementRules' | 'narrativeRules', value: string, savedHint: string): void {
+    const book = this.data.settings?.coordBook;
+    this.actions.onSaveSettings({
+      coordBook: {
+        enabled: Boolean(book?.enabled),
+        includeTier4: book?.includeTier4 !== false,
+        excludeTrailPlaces: book?.excludeTrailPlaces === true,
+        maxEntries: book?.maxEntries ?? 200,
+        movementRulesEnabled: book?.movementRulesEnabled !== false,
+        narrativeRulesEnabled: book?.narrativeRulesEnabled !== false,
+        movementRules: book?.movementRules ?? '',
+        narrativeRules: book?.narrativeRules ?? '',
+        [field]: value,
+      },
+    });
+    const hint = (this.panes.get('settings') as HTMLElement).querySelector('[data-role=geo-hint]') as HTMLElement | null;
+    if (hint) {
+      hint.textContent = value.trim() ? `已保存。${savedHint}` : '已保存为空文本：下次同步会移除对应的规则条目（想保留文本只停用，请取消上面那个勾）。';
+    }
+  }
+
+  /** 开关即时保存（不用再去点「保存设置」）；数量类参数沿用当前值 */
+  private collectGeoSettings(): void {
+    const pane = this.panes.get('settings') as HTMLElement;
+    const checked = (key: string) => Boolean((pane.querySelector(`[data-gset=${key}]`) as HTMLInputElement | null)?.checked);
+    const text = (key: string) => (pane.querySelector(`[data-gset-text=${key}]`) as HTMLTextAreaElement | null)?.value ?? this.data.settings?.coordBook?.[key as 'movementRules' | 'narrativeRules'] ?? '';
+    this.actions.onSaveSettings({
+      coordBook: {
+        enabled: checked('coordEnabled'),
+        includeTier4: checked('coordTier4'),
+        excludeTrailPlaces: this.data.settings?.coordBook?.excludeTrailPlaces === true,
+        maxEntries: this.data.settings?.coordBook?.maxEntries ?? 200,
+        movementRulesEnabled: checked('coordMovementOn'),
+        narrativeRulesEnabled: checked('coordNarrativeOn'),
+        movementRules: text('movementRules'),
+        narrativeRules: text('narrativeRules'),
+      },
+      geoContext: {
+        enabled: checked('geoEnabled'),
+        depth: this.data.settings?.geoContext?.depth ?? 1,
+        role: this.data.settings?.geoContext?.role ?? 'system',
+        nearbyCount: this.data.settings?.geoContext?.nearbyCount ?? 6,
+        enforceBounds: checked('geoBounds'),
+        jumpNotice: checked('geoJump'),
+      },
+    });
+    const hint = pane.querySelector('[data-role=geo-hint]') as HTMLElement | null;
+    if (hint) hint.textContent = '已保存。挂载状态下底图变更会自动同步进世界书；态势开关下一轮生成生效。';
   }
 
   /** 把模型列表填进下拉框；选中下拉里的一项就会直接替换「模型」输入框，不用手打 */
@@ -608,12 +845,12 @@ export class MapWindow {
       if (!models.length) throw new Error(`${base}/models 没有返回任何模型`);
       this.fillModels(models);
       if (button) button.textContent = `已获取 ${models.length} 个`;
-      this.showReport(
+      this.showApiResult(
         `【获取模型列表】成功\n接口：${base}\n共 ${models.length} 个：\n` +
           models.map(id => `  · ${id}`).join('\n') +
           `\n\n选一个（下拉框或「自定义」框）再点「保存设置」。`,
-        '已拉到模型列表，下拉里点一下就能替换模型名。',
       );
+      toast('success', `已获取 ${models.length} 个模型，结果在按钮下方`);
     } catch (error) {
       const message = String(error instanceof Error ? error.message : error);
       if (button) button.textContent = `失败：${message.slice(0, 30)}`;
@@ -623,10 +860,10 @@ export class MapWindow {
       } catch {
         detail = '';
       }
-      this.showReport(
+      this.showApiResult(
         `【获取模型列表】失败\n接口：${base || '(未填写)'}\n密钥：${key ? '已填写' : '(空)'}\n原因：${message}${detail}\n`,
-        `获取模型列表失败：${message}${detail}`,
       );
+      toast('error', `获取模型列表失败：${message.slice(0, 60)}${detail}`);
     } finally {
       if (button) {
         button.disabled = false;
@@ -683,13 +920,17 @@ export class MapWindow {
         temperature: Number(read('temperature')) || 0,
       },
       presetUrl: read('presetUrl').trim(),
+      layoutSupplement: read('layoutSupplement'),
     });
   }
 
   private bindChrome(): void {
     const bar = this.root.querySelector('.dym-titlebar') as HTMLElement;
+    // 标题栏按钮里是 SVG 图标：点击目标可能是 <svg>/<path>，必须用 closest 找到带 data-act 的按钮
+    const actOf = (target: EventTarget | null): string | undefined =>
+      ((target as HTMLElement | null)?.closest?.('[data-act]') as HTMLElement | null)?.dataset?.act;
     bar.addEventListener('click', event => {
-      const act = (event.target as HTMLElement).dataset?.act;
+      const act = actOf(event.target);
       if (act === 'drawer') this.toggleDrawer();
       else if (act === 'locate') this.actions.onLocateCurrent();
       else if (act === 'fit') this.actions.onFit();
@@ -697,12 +938,12 @@ export class MapWindow {
     });
     this.root.querySelector('[data-act=zoom-in]')?.addEventListener('click', () => this.data.canvas.zoomBy(1.25));
     this.root.querySelector('[data-act=zoom-out]')?.addEventListener('click', () => this.data.canvas.zoomBy(1 / 1.25));
-    this.launcher.addEventListener('click', () => this.open());
 
     // 拖动标题栏（贴边窄条状态下拖动 = 从边上拖出来）
     let dragging: { x: number; y: number; ox: number; oy: number; undocked: boolean } | null = null;
     bar.addEventListener('pointerdown', event => {
-      if ((event.target as HTMLElement).dataset?.act) return;
+      // 点在按钮（含其内部 SVG）上时不启动拖拽，否则 setPointerCapture 会把 click 吃掉
+      if (actOf(event.target)) return;
       dragging = {
         x: event.clientX,
         y: event.clientY,
@@ -882,8 +1123,10 @@ export class MapWindow {
       tab: this.currentTab,
       docked: rail ? this.dockSide : null,
     });
+    // 键名与 store.ts 的 LOCAL_PREFIX + 'layout' 对齐：之前写成 worldmap_local_layout，
+    // 读的却是 worldmap_map_local_layout，布局（位置/尺寸/页签）从来没被真正恢复过。
     try {
-      localStorage.setItem('worldmap_local_layout', JSON.stringify(this.data.layout));
+      localStorage.setItem('worldmap_map_local_layout', JSON.stringify(this.data.layout));
     } catch {
       /* 忽略 */
     }
@@ -928,13 +1171,13 @@ export class MapWindow {
     const off = force === undefined ? !this.root.classList.contains('dym-drawer-off') : force;
     this.root.classList.toggle('dym-drawer-off', off);
     this.data.layout.drawerOpen = !off;
-    this.drawerHandle.textContent = off ? '‹' : '›';
+    this.drawerHandle.innerHTML = svgIcon(off ? UI.chevLeft : UI.chevRight, 12);
     this.drawerHandle.title = off ? '展开右侧栏' : '收起右侧栏';
     const barButton = this.root.querySelector('[data-act=drawer]') as HTMLButtonElement | null;
     if (barButton) {
-      barButton.textContent = off ? '«' : '»';
-      barButton.title = off ? '展开右侧栏' : '收起右侧栏';
+      barButton.innerHTML = svgIcon(UI.panelRight, 15);
       barButton.classList.toggle('dym-on', off);
+      barButton.title = off ? '展开右侧栏' : '收起右侧栏';
     }
     this.persistLayout();
     requestAnimationFrame(() => this.data.canvas.render());
@@ -943,16 +1186,12 @@ export class MapWindow {
   close(): void {
     this.exitRail();
     this.root.style.display = 'none';
-    this.launcher.style.display = 'flex';
-    const width = Math.max(320, this.root.offsetWidth || 620);
-    this.launcher.style.left = `${Math.max(4, this.host.innerWidth - width - 48)}px`;
-    this.launcher.style.top = `${Math.max(4, this.root.offsetTop + 40)}px`;
+    // 不做悬浮球：关掉就是关掉，重新打开走快捷回复栏的「世界舆图」按钮
     this.data.layout = { ...this.data.layout, collapsed: false };
   }
 
   open(): void {
     this.root.style.display = 'flex';
-    this.launcher.style.display = 'none';
     requestAnimationFrame(() => this.data.canvas.render());
   }
 
@@ -999,9 +1238,12 @@ export class MapWindow {
     const nameInput = edit.querySelector('[data-role=node-name]') as HTMLInputElement;
     const xInput = edit.querySelector('[data-role=node-x]') as HTMLInputElement;
     const yInput = edit.querySelector('[data-role=node-y]') as HTMLInputElement;
+    const tierSelect = edit.querySelector('[data-role=node-tier]') as HTMLSelectElement;
     if (document.activeElement !== nameInput) nameInput.value = selected?.name ?? '';
     if (document.activeElement !== xInput) xInput.value = selected ? String(selected.xy[0]) : '';
     if (document.activeElement !== yInput) yInput.value = selected ? String(selected.xy[1]) : '';
+    if (tierSelect && document.activeElement !== tierSelect) tierSelect.value = selected?.tier ? String(selected.tier) : '';
+    tierSelect.disabled = !selected;
     const editToggle = edit.querySelector('[data-role=edit-mode]') as HTMLInputElement;
     editToggle.checked = this.data.editMode;
     (edit.querySelector('[data-act=undo]') as HTMLButtonElement).disabled = !this.data.canUndo;
@@ -1017,16 +1259,22 @@ export class MapWindow {
           : '当前画的是全部层级（城中细节也连线，容易糊成一团）。')
       : '还没有轨迹。装好提示词后新回合会自动落点，也可以点「从聊天记录重算」。';
     const trailList = trailPane.querySelector('[data-role=trail-list]') as HTMLElement;
+    const graphView = this.data.canvas.getView().graph;
     const ordered = this.data.trail.slice().sort((a, b) => (a.seq ?? a.messageId) - (b.seq ?? b.messageId));
     trailList.innerHTML = ordered
       .reverse()
       .map(point => {
         const hidden = this.data.hiddenPointIds.has(point.id);
         const orphan = point.orphan ? '<span class="dym-tag dym-orphan" title="这一楼已不在聊天里，但轨迹保留">留</span>' : '';
+        // 节点失联：底图里已经找不到这个地点（被清空/重建/换会话 id 对不上）
+        const dead =
+          !graphView.get(point.nodeId) && !(point.path && graphView.byPath.get(point.path))
+            ? '<span class="dym-tag dym-orphan" title="底图里已找不到该地点，轨迹线在此断开；重新生成底图或手补该地点即可接回">失</span>'
+            : '';
         return `<li data-point="${escapeHtml(point.id)}" style="opacity:${hidden ? 0.45 : 1}">
           <span class="dym-dot" style="background:#a3462a"></span>
           <span class="dym-name">楼${point.messageId}·${escapeHtml(point.path.split('·').slice(-2).join('·'))}</span>
-          <span class="dym-tag">${escapeHtml(point.kind)}</span>${orphan}
+          <span class="dym-tag">${escapeHtml(point.kind)}</span>${orphan}${dead}
         </li>`;
       })
       .join('');
@@ -1052,6 +1300,11 @@ export class MapWindow {
     this.statusBar.style.color = this.data.busy ? '#a3462a' : '#6a5433';
     const settingsHint = (this.panes.get('settings') as HTMLElement).querySelector('[data-role=settings-hint]') as HTMLElement;
     if (settingsHint) settingsHint.textContent = this.data.presetError ? `作者预设：${this.data.presetError}` : '';
+    const geoMount = (this.panes.get('settings') as HTMLElement).querySelector('[data-role=geo-mount]') as HTMLElement | null;
+    if (geoMount) {
+      geoMount.textContent = this.data.geoStatus ?? '…';
+      geoMount.title = this.data.geoStatus ?? '';
+    }
 
     // 地点列表
     this.renderPlaceList();
@@ -1102,6 +1355,5 @@ export class MapWindow {
 
   destroy(): void {
     this.root.remove();
-    this.launcher.remove();
   }
 }

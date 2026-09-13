@@ -1,9 +1,12 @@
-import { ID_PREFIX, KEY_BASE_MAP, KEY_TRAIL, migrateBaseMap } from './types.js';
+import { GEO_INJECT_ID, ID_PREFIX, KEY_BASE_MAP, KEY_TRAIL, migrateBaseMap } from './types.js';
 import { MapGraph, sanitizeNodes, tierOf, toBaseMap } from './graph.js';
-import { rebuildTrail } from './trail.js';
-import { loadBaseMap, loadLayout, loadSettings, loadTrail, saveBaseMap, saveSettings, saveTrail } from './store.js';
+import { rebuildTrail, collectRawLocations } from './trail.js';
+import { normalize } from './path.js';
+import { isBaseMapNode, isTrailLayerNode, loadBaseMap, loadLayout, loadSettings, loadTrail, saveBaseMap, saveSettings, saveTrail } from './store.js';
 import { resolveInitialBaseMap, fetchPresetMap, mergeBaseMaps, seedBaseMap } from './preset.js';
-import { runLayout } from './layout-ai.js';
+import { runLayout, buildHistoryPrompt, parseHistoryReply, requestLayout } from './layout-ai.js';
+import { attachCoordBook, deleteCoordBook, detachCoordBook, readCoordMountState, syncCoordBook } from './geo-book.js';
+import { buildGeoContext } from './geo-context.js';
 import { MapCanvas, defaultView } from './ui/canvas.js';
 import { MapWindow } from './ui/window.js';
 const BUTTON_NAME = '世界舆图';
@@ -27,6 +30,11 @@ let refreshTimer = null;
 let saveTimer = null;
 const undoStack = [];
 const redoStack = [];
+// ── 坐标世界书 / 地理态势（二期）状态 ──
+let geoStatus = '未挂载';
+let geoSyncTimer = null;
+let geoBookBusy = false;
+let geoInjected = false;
 // ── 工具 ────────────────────────────────────────────────────────────────
 function toast(kind, message) {
     try {
@@ -41,7 +49,12 @@ function toast(kind, message) {
     }
 }
 function snapshot() {
-    return JSON.stringify({ nodes: graph.toArray(), hidden: base.hiddenIds });
+    // 撤销快照按层分开存：底图点与轨迹点各自回到当时的位置（两层边界以 isBaseMapNode 为准）
+    return JSON.stringify({
+        base: graph.toArray().filter(isBaseMapNode),
+        trail: graph.toArray().filter(isTrailLayerNode),
+        hidden: base.hiddenIds,
+    });
 }
 function pushUndo() {
     undoStack.push(snapshot());
@@ -51,10 +64,14 @@ function pushUndo() {
 }
 function restore(json) {
     const parsed = JSON.parse(json);
-    graph = new MapGraph(parsed.nodes);
+    // 兼容旧版快照（只有 nodes 一个数组的形状）
+    const baseNodes = parsed.base ?? (parsed.nodes ?? []).filter(isBaseMapNode);
+    const trailNodes = parsed.trail ?? (parsed.base ? [] : (parsed.nodes ?? []).filter(isTrailLayerNode));
+    graph = new MapGraph([...baseNodes, ...trailNodes]);
     base.hiddenIds = parsed.hidden ?? [];
     syncSelection();
     persistBaseMap();
+    persistTrail();
     render();
 }
 function syncSelection() {
@@ -78,6 +95,8 @@ function sanitizeGraph(reason) {
         parts.push(`去掉 ${report.removedBearing} 个方位节点`);
     if (report.removedImmortal)
         parts.push(`去掉 ${report.removedImmortal} 个仙界节点`);
+    if (report.removedJunk)
+        parts.push(`清掉 ${report.removedJunk} 个垃圾名节点`);
     if (report.merged)
         parts.push(`合并 ${report.merged} 个重复点`);
     status = `底图已清理：${parts.join('、')}`;
@@ -93,7 +112,8 @@ function writeBackup() {
     }
 }
 function persistBaseMap(immediate = false) {
-    base.nodes = graph.toArray().sort((a, b) => a.depth - b.depth || a.path.localeCompare(b.path, 'zh'));
+    // 底图只存「设定 + 人工确认」层；轨迹层节点由 persistTrail 存进聊天变量
+    base.nodes = graph.toArray().filter(isBaseMapNode).sort((a, b) => a.depth - b.depth || a.path.localeCompare(b.path, 'zh'));
     base.updatedAt = new Date().toISOString();
     if (saveTimer)
         window.clearTimeout(saveTimer);
@@ -101,16 +121,25 @@ function persistBaseMap(immediate = false) {
         saveTimer = null;
         saveBaseMap(base);
         writeBackup();
+        scheduleGeoSync();
         return;
     }
     saveTimer = window.setTimeout(() => {
         saveTimer = null;
         saveBaseMap(base);
         writeBackup();
+        scheduleGeoSync();
     }, 600);
 }
 function persistTrail() {
+    // 轨迹层节点（聊天里自动落点的地点）跟着轨迹存进聊天变量
+    trail.nodes = graph.toArray().filter(isTrailLayerNode);
     saveTrail(trail);
+}
+/** 用「底图层 + 当前轨迹层」重建合成树（换会话 / 导入 / 恢复骨架后调用） */
+function recomposeGraph() {
+    graph = new MapGraph([...base.nodes.filter(isBaseMapNode), ...(trail.nodes ?? [])]);
+    syncSelection();
 }
 function download(filename, content) {
     try {
@@ -157,7 +186,8 @@ function refreshTrail() {
     try {
         const lastId = getLastMessageId();
         if (lastId < 0) {
-            trail = { schemaVersion: 1, points: [], hiddenPointIds: trail?.hiddenPointIds ?? [] };
+            trail = { schemaVersion: 1, points: [], hiddenPointIds: trail?.hiddenPointIds ?? [], nodes: [] };
+            persistTrail();
             render();
             return;
         }
@@ -171,6 +201,7 @@ function refreshTrail() {
             graph,
             hiddenPointIds: [...(trail?.hiddenPointIds ?? [])],
             previous: trail,
+            pathFixes: trail?.pathFixes,
         });
         trail = result.trail;
         let dirty = result.createdNodes > 0;
@@ -196,6 +227,8 @@ function refreshTrail() {
         persistTrail();
         status = `节点 ${graph.size} 个｜轨迹 ${trail.points.length} 点${result.orphanCount ? `（含 ${result.orphanCount} 个存档已删楼层）` : ''}`;
         render();
+        // 位置变了 → 态势块内容跟着变（uninject + inject 覆盖式重注）
+        refreshGeoInjection();
     }
     catch (error) {
         toast('error', `重建轨迹失败：${String(error)}`);
@@ -247,6 +280,7 @@ function render() {
         canRedo: redoStack.length > 0,
         timelineIndex,
         presetError,
+        geoStatus,
     });
 }
 // ── 生成报告：让用户看得见"到底生成了什么" ──────────────────────────────
@@ -278,6 +312,114 @@ function buildLayoutReport(scopeLabel, outcome) {
     lines.push('—— 模型原始回复 ——');
     lines.push(rawReply.trim() || '(空)');
     return lines.join('\n');
+}
+// ── 坐标世界书与地理态势（二期）─────────────────────────────────────────
+function describeGeoMount() {
+    const state = readCoordMountState();
+    if (state.isPrimary)
+        return '异常：坐标书成了主世界书';
+    // 只报告《世界舆图·坐标表》自己的挂载状态 —— 别的 DLC 挂了几本附加书与玩家无关，
+    // 之前写「附加书 N 本」会把别人的书数进来，让人误以为本书已挂载（或没挂上）。
+    if (state.mounted)
+        return '已挂载';
+    return '未挂载';
+}
+function geoSyncOptions() {
+    return {
+        includeTier4: settings.coordBook.includeTier4,
+        maxEntries: settings.coordBook.maxEntries,
+        hiddenIds: [...base.hiddenIds],
+        excludeTrailPlaces: settings.coordBook.excludeTrailPlaces === true,
+        // 关掉开关 = 保留文本但不写进书（传空串，geo-book 侧非空才生成条目）
+        movementRules: settings.coordBook.movementRulesEnabled === false ? '' : settings.coordBook.movementRules ?? '',
+        narrativeRules: settings.coordBook.narrativeRulesEnabled === false ? '' : settings.coordBook.narrativeRules ?? '',
+    };
+}
+/** 底图 → 世界书 的单向同步。manual=false 时（自动）只写控制台与状态栏，不弹报告 */
+async function runGeoSync(manual) {
+    if (geoBookBusy)
+        return;
+    geoBookBusy = true;
+    if (manual) {
+        busy = '正在同步坐标世界书…';
+        render();
+    }
+    try {
+        const report = await syncCoordBook(graph, geoSyncOptions());
+        geoStatus = `${describeGeoMount()}｜${report.message}`;
+        const failed = report.status === 'refused' || report.status === 'failed' || report.status === 'missing-api';
+        if (manual) {
+            toast(failed ? 'warning' : 'success', `坐标世界书：${report.message}`);
+            mapWindow?.showReport(`【坐标世界书同步】${report.status}\n${report.message}\n条目数：${report.entryCount}\n挂载状态：${describeGeoMount()}`, failed ? '同步被拒或缺接口，详见上方报告。' : '同步完成；挂载后正文提到地名才会注入对应坐标条目。');
+        }
+        else {
+            window.console.info('[世界舆图] 坐标世界书自动同步：', report.message);
+        }
+    }
+    catch (error) {
+        const message = String(error instanceof Error ? error.message : error);
+        geoStatus = `${describeGeoMount()}｜同步失败`;
+        if (manual) {
+            toast('error', `同步坐标世界书失败：${message}`);
+            mapWindow?.showReport(`【坐标世界书同步】失败\n${message}\n`, `同步失败：${message}`);
+        }
+        else {
+            window.console.warn('[世界舆图] 坐标世界书自动同步失败', error);
+        }
+    }
+    finally {
+        geoBookBusy = false;
+        if (manual)
+            busy = null;
+        render();
+    }
+}
+/** 底图变更后 2 秒去抖同步（设置里开了才生效；挂载与否则不影响内容同步） */
+function scheduleGeoSync() {
+    if (!settings?.coordBook?.enabled)
+        return;
+    if (geoSyncTimer)
+        window.clearTimeout(geoSyncTimer);
+    geoSyncTimer = window.setTimeout(() => {
+        geoSyncTimer = null;
+        void runGeoSync(false);
+    }, 2000);
+}
+/** [地理态势] 注入：uninject + inject 覆盖式重注，内容每次现算；失败只记日志，绝不影响正文生成 */
+function refreshGeoInjection() {
+    try {
+        const enabled = Boolean(settings?.geoContext?.enabled);
+        const result = enabled
+            ? buildGeoContext({
+                graph,
+                points: trail.points,
+                nearbyCount: settings.geoContext.nearbyCount,
+                enforceBounds: settings.geoContext.enforceBounds,
+                jumpNotice: settings.geoContext.jumpNotice,
+                hiddenIds: [...base.hiddenIds],
+            })
+            : null;
+        if (!result) {
+            if (geoInjected) {
+                uninjectPrompts([GEO_INJECT_ID]);
+                geoInjected = false;
+            }
+            return;
+        }
+        const depth = Math.max(0, Math.min(8, Math.round(settings.geoContext.depth || 0)));
+        uninjectPrompts([GEO_INJECT_ID]);
+        injectPrompts([{ id: GEO_INJECT_ID, position: 'in_chat', depth, role: settings.geoContext.role, content: result.content }], { once: false });
+        geoInjected = true;
+    }
+    catch (error) {
+        window.console.warn('[世界舆图] 注入地理态势失败', error);
+    }
+}
+/** 生成前事件：注入只对当前聊天有效，所以每次生成前重注一遍（顺带保证内容最新） */
+function onGenerationAfterCommands(_type, _option, dryRun) {
+    if (dryRun)
+        return;
+    refreshGeoInjection();
 }
 // ── 动作 ────────────────────────────────────────────────────────────────
 const actions = {
@@ -421,6 +563,26 @@ const actions = {
         render();
         toast('info', node.locked ? '已锁定，AI 不会再改它' : '已解锁');
     },
+    /** 手动指定显示层级（1~5）；null = 恢复按类型自动推导。影响显示分级与坐标书收录范围 */
+    onSetNodeTier(id, tier) {
+        const node = graph.get(id);
+        if (!node)
+            return;
+        pushUndo();
+        const mutable = node;
+        if (tier == null) {
+            delete mutable.tier;
+            toast('info', '已恢复按类型自动分层');
+        }
+        else {
+            mutable.tier = Math.max(1, Math.min(5, Math.round(tier)));
+            if (node.status === 'unplaced')
+                node.status = 'ok';
+            toast('info', `「${node.name}」已设为层级 ${mutable.tier}`);
+        }
+        persistBaseMap();
+        render();
+    },
     onScatterUnplaced() {
         pushUndo();
         const moved = graph.scatterUnplaced();
@@ -468,6 +630,12 @@ const actions = {
         saveSettings(settings);
         render();
         toast('success', '设置已保存');
+        // 态势开关即时生效：关掉就撤掉已注入的块；打开（或改参数）立刻按新参数重算
+        if (patch.geoContext)
+            refreshGeoInjection();
+        // 打开自动同步后立刻补一次（若此前书没建，这次会建出来；挂载仍需手动点）
+        if (patch.coordBook?.enabled)
+            scheduleGeoSync();
     },
     async onTestApi() {
         if (busy)
@@ -504,14 +672,14 @@ const actions = {
             mapWindow?.fillModels(models);
             const head = models.slice(0, 4).join('、');
             toast('success', `连接正常（${ms}ms）：共 ${models.length} 个模型，如 ${head}${models.length > 4 ? ' …' : ''}`);
-            mapWindow?.showReport(`【测试连接】成功\n接口：${base}\n耗时：${ms}ms\n模型：${models.length} 个\n` +
+            mapWindow?.showApiResult(`【测试连接】成功\n接口：${base}\n耗时：${ms}ms\n模型：${models.length} 个\n` +
                 models.map(id => `  · ${id}`).join('\n') +
-                `\n当前选用：${settings.api.model || '(未设置)'}`, '连接测试通过；模型下拉已填好，选一个再点「保存设置」即可。');
+                `\n当前选用：${settings.api.model || '(未设置)'}`);
         }
         catch (error) {
             const message = String(error instanceof Error ? error.message : error);
             toast('error', `连接失败：${message}`);
-            mapWindow?.showReport(`【测试连接】失败\n接口：${settings.api.url || '(未填写)'}\n密钥：${settings.api.key ? '已填写' : '(空)'}\n原因：${message}\n`, `连接失败：${message}`);
+            mapWindow?.showApiResult(`【测试连接】失败\n接口：${settings.api.url || '(未填写)'}\n密钥：${settings.api.key ? '已填写' : '(空)'}\n原因：${message}\n`);
         }
         finally {
             busy = null;
@@ -564,7 +732,7 @@ const actions = {
                 throw new Error('预设为空');
             pushUndo();
             const report = mergeBaseMaps(base, preset, { source: 'preset' });
-            graph = new MapGraph(base.nodes);
+            recomposeGraph();
             presetError = undefined;
             persistBaseMap(true);
             syncStatus('作者预设已合并');
@@ -583,15 +751,17 @@ const actions = {
     onResetBaseMap() {
         pushUndo();
         base = seedBaseMap();
-        graph = new MapGraph(base.nodes);
+        // 只重置底图层；当前会话的轨迹层原样保留（轨迹数据不受影响）
+        recomposeGraph();
         selectedId = null;
         focusId = null;
         persistBaseMap(true);
+        persistTrail();
         syncStatus('已恢复内置骨架');
         render();
         toast('success', '已恢复内置世界骨架');
     },
-    /** 清空地图上所有地点（轨迹数据不动），两步确认 + 可撤销 */
+    /** 清空底图层（轨迹层随后按聊天记录重建），两步确认 + 可撤销 */
     onClearNodes() {
         const count = graph.size;
         if (!count) {
@@ -605,8 +775,9 @@ const actions = {
         focusId = null;
         persistBaseMap(true);
         syncStatus('地图已清空（轨迹保留，可撤销）');
-        render();
-        toast('success', `已清空 ${count} 个地点（可撤销）。轨迹还在，下一回合会按正文重新落点。`);
+        // 当前会话的轨迹层马上按聊天记录重建回来 —— 轨迹线不断，清理的只有设定层
+        refreshTrail();
+        toast('success', `已清空 ${count} 个地点（可撤销）。设定层已清；当前会话的轨迹点已重建。`);
     },
     onExportBaseMap() {
         persistBaseMap(true);
@@ -615,6 +786,181 @@ const actions = {
     /** 导出「地名(坐标)｜…」锚点文本：可以直接替换提示词里的固定锚点段 */
     onExportAnchorText() {
         return buildAnchorText(graph);
+    },
+    /** 生成并挂载坐标世界书（用户显式点击 = 显式授权动绑定） */
+    async onMountCoordBook() {
+        if (busy)
+            return;
+        busy = '正在生成并挂载坐标世界书…';
+        render();
+        try {
+            const report = await syncCoordBook(graph, geoSyncOptions());
+            if (report.status === 'refused' || report.status === 'failed' || report.status === 'missing-api') {
+                throw new Error(report.message);
+            }
+            const mount = readCoordMountState();
+            if (mount.isPrimary)
+                throw new Error('「世界舆图·坐标表」是主世界书，不能作为附加书挂载');
+            if (!mount.caps.canAttach) {
+                geoStatus = `未挂载｜${report.message}`;
+                throw new Error(`世界书已生成（${report.entryCount} 条），但缺少绑定接口：${mount.caps.notes.join('；')}`);
+            }
+            if (!mount.mounted)
+                await attachCoordBook();
+            geoStatus = `${describeGeoMount()}｜${report.message}`;
+            toast('success', `坐标世界书已就绪并挂载（${report.entryCount} 条）`);
+            mapWindow?.showReport(`【挂载坐标世界书】完成\n${report.message}\n挂载状态：${describeGeoMount()}\n\n` +
+                '· 绿灯条目：正文提到地名才注入该地坐标（不提不花 token）\n' +
+                '· 每回合另有「地理态势」注入（本页可关）\n' +
+                '· 之后拖动/生成底图会自动同步进世界书（单向：底图 → 世界书）', '挂载完成；世界书侧手改的坐标会在下次同步被底图覆盖。');
+        }
+        catch (error) {
+            const message = String(error instanceof Error ? error.message : error);
+            geoStatus = `${describeGeoMount()}｜挂载失败`;
+            toast('error', `挂载坐标世界书失败：${message}`);
+            mapWindow?.showReport(`【挂载坐标世界书】失败\n${message}\n`, `挂载失败：${message}`);
+        }
+        finally {
+            busy = null;
+            render();
+        }
+    },
+    /** 修复挂载（重新挂）：不碰书内容，只把绑定重写一遍并读回校验 —— 书已同步却显示「未挂载」时点它 */
+    async onRemountCoordBook() {
+        if (busy)
+            return;
+        busy = '正在修复挂载…';
+        render();
+        try {
+            const before = readCoordMountState();
+            if (before.isPrimary)
+                throw new Error('「世界舆图·坐标表」是主世界书，不能作为附加书挂载');
+            if (!before.caps.canAttach)
+                throw new Error(`缺少角色卡绑定接口：${before.caps.notes.join('；')}`);
+            const wasMounted = before.mounted;
+            await attachCoordBook();
+            geoStatus = `${describeGeoMount()}｜${wasMounted ? '绑定已重写并校验通过' : '已补挂'}`;
+            toast('success', wasMounted ? '挂载状态已修复（绑定重写并读回校验）' : '已重新挂载坐标世界书');
+            mapWindow?.showReport(`【修复挂载】完成\n${wasMounted ? '原绑定已存在，已重写并读回校验' : '此前未挂载，现已补挂'}\n` +
+                `挂载状态：${describeGeoMount()}\n`, '修复完成；下一回合生成时坐标条目即可被扫描到。');
+        }
+        catch (error) {
+            const message = String(error instanceof Error ? error.message : error);
+            geoStatus = `${describeGeoMount()}｜修复挂载失败`;
+            toast('error', `修复挂载失败：${message}`);
+            mapWindow?.showReport(`【修复挂载】失败\n${message}\n`, `修复失败：${message}`);
+        }
+        finally {
+            busy = null;
+            render();
+        }
+    },
+    /** 卸载 = 只解除绑定，书文件保留（可再次挂载） */
+    onUnmountCoordBook() {
+        detachCoordBook()
+            .then(() => {
+            geoStatus = `${describeGeoMount()}｜已解除绑定（书仍保留）`;
+            toast('success', '已卸载坐标世界书（书文件保留，可再次挂载）');
+            render();
+        })
+            .catch((error) => {
+            toast('error', `卸载失败：${String(error instanceof Error ? error.message : error)}`);
+        });
+    },
+    /** 删除 = 解绑 + 删书（两步确认在设置页按钮上） */
+    async onDeleteCoordBook() {
+        if (busy)
+            return;
+        busy = '正在删除坐标世界书…';
+        render();
+        try {
+            const message = await deleteCoordBook();
+            geoStatus = describeGeoMount();
+            toast('success', message);
+            mapWindow?.showReport(`【删除坐标世界书】${message}\n`, message);
+        }
+        catch (error) {
+            const message = String(error instanceof Error ? error.message : error);
+            toast('error', `删除失败：${message}`);
+            mapWindow?.showReport(`【删除坐标世界书】失败\n${message}\n`, `删除失败：${message}`);
+        }
+        finally {
+            busy = null;
+            render();
+        }
+    },
+    onSyncCoordBook() {
+        void runGeoSync(true);
+    },
+    /**
+     * AI 整理本会话地点（聊天中途装插件的一次性补救）：
+     * 把本会话出现过的原始地点串（混描述/时刻/拼层级的那种）发给模型，
+     * 规范化成干净层级路径（非设定地点顺带给相对坐标），写进 trail.pathFixes 并重建轨迹。
+     */
+    async onAiFixHistory() {
+        if (busy)
+            return;
+        busy = '正在用 AI 整理本会话地点…';
+        render();
+        try {
+            const lastId = getLastMessageId();
+            if (lastId < 0)
+                throw new Error('这个会话还没有任何消息');
+            const messages = getChatMessages(`0-${lastId}`).map(message => ({
+                message: String(message?.message ?? ''),
+                is_user: Boolean(message?.is_user),
+                swipe_id: Number(message?.swipe_id ?? 0),
+            }));
+            const raws = collectRawLocations(messages);
+            if (!raws.length) {
+                throw new Error('没有收集到任何「当前地点」记录——这个会话可能还没玩到有地点的楼层');
+            }
+            const knownPaths = graph.toArray().filter(isBaseMapNode).map(node => node.path);
+            const prompt = buildHistoryPrompt(raws, knownPaths);
+            const { text } = await requestLayout(settings, prompt);
+            const fixes = parseHistoryReply(text, new Set(raws));
+            if (!fixes.length) {
+                throw new Error('模型返回的内容解析不出任何整理结果（可再点一次，或换个听话的模型）');
+            }
+            const fixesMap = {};
+            for (const fix of fixes) {
+                fixesMap[normalize(fix.raw)] = {
+                    path: fix.path,
+                    ...(Number.isFinite(fix.x) ? { x: fix.x } : {}),
+                    ...(Number.isFinite(fix.y) ? { y: fix.y } : {}),
+                };
+            }
+            trail.pathFixes = { ...(trail.pathFixes ?? {}), ...fixesMap };
+            persistTrail();
+            refreshTrail();
+            toast('success', `已整理 ${fixes.length}/${raws.length} 条地点串，轨迹已重建`);
+            mapWindow?.showReport(`【AI 整理本会话地点】完成\n输入 ${raws.length} 条，整理出 ${fixes.length} 条：\n` +
+                fixes
+                    .map(fix => `  · ${fix.raw}\n    → ${fix.path}${Number.isFinite(fix.x) ? ` (${fix.x}, ${fix.y})` : ''}`)
+                    .join('\n') +
+                '\n\n整理结果已存进本会话的轨迹数据，之后每次重算都会套用；新的脏写法出现后再点一次即可。', '轨迹已按整理结果重建；没整理到的条目仍走脚本解析。');
+        }
+        catch (error) {
+            const message = String(error instanceof Error ? error.message : error);
+            toast('error', `整理失败：${message}`);
+            mapWindow?.showReport(`【AI 整理本会话地点】失败\n${message}\n`, `整理失败：${message}`);
+        }
+        finally {
+            busy = null;
+            render();
+        }
+    },
+    /** 本回合态势预览（写进「导出/导入」文本框，方便看模型会收到什么） */
+    onGeoPreview() {
+        const result = buildGeoContext({
+            graph,
+            points: trail.points,
+            nearbyCount: settings.geoContext.nearbyCount,
+            enforceBounds: settings.geoContext.enforceBounds,
+            jumpNotice: settings.geoContext.jumpNotice,
+            hiddenIds: [...base.hiddenIds],
+        });
+        return result?.content ?? '（还没有可用的当前位置：先玩一回合，或点「轨迹 → 从聊天记录重算」）';
     },
     onExportTrail() {
         download(`世界舆图轨迹-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(trail, null, 2));
@@ -631,7 +977,7 @@ const actions = {
                 throw new Error('缺少 nodes 数组，这看起来不是底图 JSON');
             pushUndo();
             base = migrateBaseMap({ ...parsed, hiddenIds: parsed.hiddenIds ?? [] });
-            graph = new MapGraph(base.nodes);
+            recomposeGraph();
             sanitizeGraph('导入底图后');
             persistBaseMap(true);
             syncStatus('已导入底图');
@@ -714,9 +1060,10 @@ async function init() {
     });
     base = resolution.map;
     presetError = resolution.presetError;
-    graph = new MapGraph(base.nodes);
+    trail = loadTrail() ?? { schemaVersion: 1, points: [], hiddenPointIds: [], nodes: [] };
+    // 合成树 = 底图层（设定+人工确认）+ 当前会话的轨迹层
+    graph = new MapGraph([...base.nodes.filter(isBaseMapNode), ...(trail.nodes ?? [])]);
     sanitizeGraph('加载底图时');
-    trail = loadTrail() ?? { schemaVersion: 1, points: [], hiddenPointIds: [] };
     persistBaseMap(true);
     const wrap = hostDocument.createElement('div');
     wrap.id = `${ID_PREFIX}canvas`;
@@ -757,11 +1104,11 @@ async function init() {
         canRedo: false,
         timelineIndex,
         presetError,
+        geoStatus,
     }, windowActions, wrap);
     hostDocument.body.appendChild(mapWindow.root);
-    hostDocument.body.appendChild(mapWindow.launcher);
-    mapWindow.launcher.style.display = 'none';
     status = `节点 ${graph.size} 个｜轨迹 ${trail.points.length} 点`;
+    geoStatus = describeGeoMount();
     render();
     canvas.fitStage();
     refreshTrail();
@@ -779,9 +1126,15 @@ function bindEvents() {
             selectedId = null;
             focusId = null;
             timelineIndex = null;
-            trail = loadTrail() ?? { schemaVersion: 1, points: [], hiddenPointIds: [] };
+            // 轨迹层（含轨迹地点节点）跟着聊天走：换会话整个切换，底图层不动
+            trail = loadTrail() ?? { schemaVersion: 1, points: [], hiddenPointIds: [], nodes: [] };
+            recomposeGraph();
             scheduleRefresh('切换聊天');
+            // 注入只对当前聊天有效：切存档后旧的注入已失效，重注一次（内容按新轨迹现算）
+            geoStatus = describeGeoMount();
+            refreshGeoInjection();
         });
+        eventOn(tavern_events.GENERATION_AFTER_COMMANDS, onGenerationAfterCommands);
     }
     catch (error) {
         toast('error', `注册酒馆事件失败：${String(error)}`);
@@ -817,6 +1170,14 @@ function bindEvents() {
     })();
 }
 function teardown() {
+    try {
+        // 态势注入是本插件加的 prompt，卸载时必须撤掉，不能给别的脚本留脏数据
+        uninjectPrompts([GEO_INJECT_ID]);
+        geoInjected = false;
+    }
+    catch {
+        /* 忽略 */
+    }
     try {
         eventClearAll();
     }
@@ -883,8 +1244,22 @@ hostWindow.__worldMap = {
         render();
         return canvas?.getScale() ?? 0;
     },
-    state: () => ({ nodes: graph.size, points: trail.points.length, currentPath, keys: [KEY_BASE_MAP, KEY_TRAIL] }),
+    state: () => ({
+        nodes: graph.size,
+        points: trail.points.length,
+        baseNodes: graph.toArray().filter(isBaseMapNode).length,
+        trailNodes: graph.toArray().filter(isTrailLayerNode).length,
+        pathFixes: Object.keys(trail.pathFixes ?? {}).length,
+        currentPath,
+        keys: [KEY_BASE_MAP, KEY_TRAIL],
+    }),
     toBaseMap: () => toBaseMap(graph, base),
+    /** 二期调试：坐标世界书挂载状态 / 态势预览 / 手动触发同步 */
+    geoBook: () => ({ mount: readCoordMountState(), status: geoStatus }),
+    geoPreview: () => actions.onGeoPreview(),
+    syncGeoBook: () => runGeoSync(true),
+    /** 调试：AI 整理本会话地点（轨迹页按钮走的就是它） */
+    aiFixHistory: () => actions.onAiFixHistory(),
     /** 自检：渲染管线各环节的实际数量，供本地试验台/控制台确认 */
     diagnostics: () => {
         const visible = canvas ? canvas.getView().graph.toArray() : [];

@@ -28,8 +28,8 @@ const BASE_MAP_SCHEMA = 2;
 const ORIGIN_SHIFT = -500;
 /** 地点层级分隔符（U+00B7 MIDDLE DOT） */
 const LOC_SEP = '·';
-/** 会出现在「地点名」与「环境描述」之间的分隔符（实测四种都用过） */
-const DESCRIPTION_CUTS = ['；', ';', '。', '，', ',', '！', '？', '!', '?', '\n'];
+/** 会出现在「地点名」与「环境描述」之间的分隔符（实测五种都用过，空格也算——AI 爱用空格隔描述） */
+const DESCRIPTION_CUTS = ['；', ';', '。', '，', ',', '！', '？', '!', '?', '\n', ' '];
 /** 文案里偶尔混进来的其它中点变体，解析前统一成 LOC_SEP */
 const SEP_VARIANTS = ['·', '・', '•', '‧', '∙', '．', '﻿·'];
 function tierOfKind(kind) {
@@ -52,6 +52,11 @@ function tierOfKind(kind) {
 }
 /** 低于该缩放倍率就不画这个层级的点（索引 = tier） */
 const TIER_VISIBLE_SCALE = [0, 0.1, 0.32, 0.85, 2.6, 6.5];
+/**
+ * 高于该缩放倍率就隐藏这个层级的点（索引 = tier；Infinity = 不隐藏）。
+ * 高德式：放大到街区级别时，「中州」「大域」这种洲级粒度只剩噪音，自动退场。
+ */
+const TIER_HIDE_ABOVE_SCALE = [Number.POSITIVE_INFINITY, 8, 25, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
 /** 低于该缩放倍率就不画这个层级的文字标签 */
 const TIER_LABEL_SCALE = [0, 0.1, 0.32, 1.15, 3.6, 8.5];
 /** 屏幕像素半径（索引 = tier） */
@@ -81,6 +86,54 @@ function migrateBaseMap(base) {
 /** 存储键名（避免与"卡内手机脚本"的 phone_data 冲突） */
 const KEY_BASE_MAP = 'worldmap_v1';
 const KEY_TRAIL = 'worldmap_trail_v1';
+// ── 坐标世界书（二期）────────────────────────────────────────────────
+/**
+ * 插件自建坐标世界书的书名。挂到角色卡 additional（原世界书零改动），
+ * 由 `geo-book.ts` 负责创建/同步/挂载/卸载；底图永远是唯一真源（单向同步）。
+ */
+const WORLDMAP_BOOK = '世界舆图·坐标表';
+/** 坐标世界书里条目名的统一前缀 —— 布局 AI 与其他脚本靠它隔离我们的条目 */
+const GEO_ENTRY_PREFIX = '[舆图]';
+/** 坐标世界书条目上限：防绿灯扫描性能劣化；超过时只收 tier≤3 */
+const GEO_BOOK_MAX_ENTRIES = 200;
+/** [地理态势] 注入提示词的 id（覆盖式重注与 pagehide 卸载都靠它） */
+const GEO_INJECT_ID = 'worldmap-geo-context';
+/** 态势块与坐标条目的坐标换算说明（跟底图一致：1 单位 ≈ 15 亿里） */
+const GEO_UNIT_HINT = '1 坐标单位 ≈ 15 亿里';
+/**
+ * 人物移动规则的默认文本（设置页文本框预填，可在框里直接改）。
+ * 与 `docs/提示词-地图坐标.md` 第八节保持一致。
+ */
+const DEFAULT_MOVEMENT_RULES = `[人物移动规则]
+· 距离口径：世界书与舆图给出的距离自带约 1000 倍夸张倍率，按数字直接换算，不要用现实尺度校正。
+· 距离参照：中州/南州/北冥横穿约 2500~3000 亿里（167~200 格）；神都到各大宗门以数百亿里起步。
+· 各境界日行速度（1 坐标格 ≈ 15 亿里）：
+  凡人 日行数万里，可忽略不计；
+  金丹以下 御器/御剑，日行数百万里（不足 0.01 格）——跨域必须依赖传送阵；
+  金丹、元婴 飞行，日行数千万里（约 0.01~0.05 格）——跨域基本依赖传送阵或飞舟；
+  化神及以上 超高速肉身飞行为主、可短暂瞬移，日行数十亿里（约数格），跨大区以月计；
+  合体期和大乘前期 真正能瞬移，瞬移+飞行交替，日行数百亿里（数十格）：跨一个大区约半天到三天；
+  大乘后期/渡劫期（最顶级）掌握法则，数秒横跨大陆（2500 亿里 ≈ 170 格）。
+· 远距离移动优先传送阵或飞舟；公用传送阵一般只有中型及以上城市才有。
+· 硬性约束：赶路方式必须匹配境界，严禁降级移动（如「化神修士走路/骑马从洛阳到合欢宗」）；
+  若「[地理态势]」提示位移超限，正文必须补出与境界相符的手段
+  （传送阵/飞舟/法宝，大乘后期以上可为法则跨越），否则改写目的地。`;
+/**
+ * 叙事地理规则的默认文本（设置页文本框预填）。与 `docs/提示词-地图坐标.md` 第九节一致。
+ * 生效范围恰好等于坐标书本身：随书蓝灯注入，卸书即失效。
+ */
+const DEFAULT_NARRATIVE_RULES = `[叙事地理规则]
+· 地点权威：已挂载《世界舆图·坐标表》——地点之间的方位、距离与归属，以本书条目与每轮「[地理态势]」
+  为最高依据，优先于世界书地点条目原文里的方位/距离描述（那是未校准的粗略记录）。
+  两者冲突时按坐标书写，不要在正文里复述或争论差异。
+· 事件地理归属：每个事件都发生在具体坐标上。当前场景只能自然出现「[地理态势]」所列地界与周边的
+  人、势力与动向；远处正在发生的事（如东境妖族之战）不得在相距遥远的另一处直接上演——
+  埋伏、哨卡、逃兵、余波都不会凭空跨域出现。
+· 远方信息入场的唯一途径：亲历者转述、传讯玉简/书信、商队与旅人传闻、官府公告等，
+  且应带有滞后与失真；传闻不得直接当成眼前事实描写。
+· 例外：正在移动的势力（追击、迁徙、远征）可以跨区出现，但必须交代行进路线与耗时，与移动规则一致。
+· 「[地理态势]」每回合更新；切换场景（跨格移动、传送）后，遭遇池按新位置重算，
+  旧地点的剧情线只能以信息形式延续。`;
 /** 所有自己注入到父页面的 DOM id 前缀（pagehide 与热重载靠它清理） */
 const ID_PREFIX = 'worldmap-';
 const DEFAULT_API = {
@@ -96,6 +149,68 @@ const DEFAULT_API = {
     temperature: 0.2,
 };
 const DEFAULT_PRESET_URL = '';
+/**
+ * 生成底图的「方位补充表」默认内容（与 docs/底图补充.txt 保持一致，可在设置页编辑）。
+ *
+ * 用法（三层优先级）：**补充表为主**先落点 → 坐标骨架（原点/四域）定框架 → 世界书条目做校验与补漏。
+ * 格式：`地名-方位-距离(亿里)`，括号里是相对线索（距某地 N、向某方向 N 到边界、正上/正下方、宽度）。
+ */
+const LAYOUT_SUPPLEMENT_DEFAULT = `-以神都洛阳为中州中心：地点-在洛阳的XX方向-直线距离（亿里）
+
+万法宗-东南-1200
+湮丹宗-南-800
+青玉宗-西南-无记录/（距蜀山500、合欢宗200）
+蜀山剑门-西-700
+昆仑道门-西-1000/（距蜀山300）
+阵天宗-西北-300
+符韵门-北偏西-600
+星道宗-极北-1800/（绝迹冰谷正上高空30）
+合欢宗-东南（可能）-400/（靠近南梁古国）
+灵墟宗-东偏北、靠近无尽山脉
+
+-中州边界：
+万法宗向东400-无尽山脉（宽300）
+湮丹宗向南300-烬骨荒原（宽80）
+叹息沙海（宽120）
+绝迹冰谷（宽35）
+
+-东极青木域以建木中心，但无具体相对位置。
+东部-九尾天狐-距神猿1200、距北部柳蛇300
+西部-神猿-靠近无尽山脉
+南部-五色孔雀-距九尾天狐1800、距神猿2000
+
+-北冥雪原：
+广寒宫为中心，距南边界1500
+黑渊/水晶龙宫-广寒宫正下方0.1
+
+-西漠佛国：
+大雷音寺=须弥山，无距离记录
+菩提城-叹息沙海的西边300
+
+-南离火州：
+北部-尸魔宗-距南血神宫200、距西古战场200
+东部-太阳神宫-距北尸魔宗230、距西血神宫50
+西部-万魔殿-距东血神宫300-距东北古战场500
+中/南部-血神宫`;
+const DEFAULT_GEO_CONTEXT = {
+    enabled: true,
+    depth: 1,
+    role: 'system',
+    nearbyCount: 6,
+    enforceBounds: true,
+    jumpNotice: true,
+};
+const DEFAULT_COORD_BOOK = {
+    enabled: false,
+    includeTier4: true,
+    maxEntries: GEO_BOOK_MAX_ENTRIES,
+    excludeTrailPlaces: false,
+    // 两段规则默认预填 —— 设置页打开就有文本，不需要再去文档里手动复制
+    movementRules: DEFAULT_MOVEMENT_RULES,
+    movementRulesEnabled: true,
+    narrativeRules: DEFAULT_NARRATIVE_RULES,
+    narrativeRulesEnabled: true,
+};
 const DEFAULT_SETTINGS = {
     schemaVersion: 1,
     api: { ...DEFAULT_API },
@@ -104,6 +219,9 @@ const DEFAULT_SETTINGS = {
     defaultOpen: true,
     showEventLayer: true,
     showUnplaced: true,
+    geoContext: { ...DEFAULT_GEO_CONTEXT },
+    coordBook: { ...DEFAULT_COORD_BOOK },
+    layoutSupplement: LAYOUT_SUPPLEMENT_DEFAULT,
 };
 const DEFAULT_LAYOUT = {
     x: -1,
@@ -119,7 +237,7 @@ const DEFAULT_LAYOUT = {
 /** 各深度自动落点的基准半径（归一化单位）；深度越深，围绕父节点越近 */
 const LAYER_RADIUS = [0, 420, 140, 48, 16, 5.5, 2];
 //# sourceMappingURL=types.js.map
-return { COORD_MIN, COORD_MAX, COORD_CENTER, BASE_MAP_SCHEMA, ORIGIN_SHIFT, LOC_SEP, DESCRIPTION_CUTS, SEP_VARIANTS, tierOfKind, TIER_VISIBLE_SCALE, TIER_LABEL_SCALE, TIER_RADIUS_PX, TIER_FONT_PX, COLLAPSE_PX, ALTITUDE_OFFSET_PX, migrateBaseMap, KEY_BASE_MAP, KEY_TRAIL, ID_PREFIX, DEFAULT_API, DEFAULT_PRESET_URL, DEFAULT_SETTINGS, DEFAULT_LAYOUT, LAYER_RADIUS };
+return { COORD_MIN, COORD_MAX, COORD_CENTER, BASE_MAP_SCHEMA, ORIGIN_SHIFT, LOC_SEP, DESCRIPTION_CUTS, SEP_VARIANTS, tierOfKind, TIER_VISIBLE_SCALE, TIER_HIDE_ABOVE_SCALE, TIER_LABEL_SCALE, TIER_RADIUS_PX, TIER_FONT_PX, COLLAPSE_PX, ALTITUDE_OFFSET_PX, migrateBaseMap, KEY_BASE_MAP, KEY_TRAIL, WORLDMAP_BOOK, GEO_ENTRY_PREFIX, GEO_BOOK_MAX_ENTRIES, GEO_INJECT_ID, GEO_UNIT_HINT, DEFAULT_MOVEMENT_RULES, DEFAULT_NARRATIVE_RULES, ID_PREFIX, DEFAULT_API, DEFAULT_PRESET_URL, LAYOUT_SUPPLEMENT_DEFAULT, DEFAULT_GEO_CONTEXT, DEFAULT_COORD_BOOK, DEFAULT_SETTINGS, DEFAULT_LAYOUT, LAYER_RADIUS };
 });
 __def("./path.js", () => {
 /**
@@ -246,7 +364,12 @@ function isBearingSegment(segment) {
         return false;
     if (BEARING_NAMES.has(text))
         return true;
-    return /^(东|南|西|北|中)(部|侧|面|方|域|境|隅)$/.test(text);
+    if (/^(东|南|西|北|中)(部|侧|面|方|域|境|隅)$/.test(text))
+        return true;
+    // 「东南方半空」「高空」「地底深处」这类方位+泛指位置的词，不是具体地点
+    if (/^((东南|西南|西北|东北|正东|正南|正西|正北|东|南|西|北|中)(部|方|侧)?(的)?)?(半空|上空|高空|深处|地底|水底|地底深处)$/.test(text))
+        return true;
+    return false;
 }
 /** 仙界相关名字：当前剧情舞台是玄天界，默认不把仙界铺进底图 */
 const IMMORTAL_REALM = /(仙域|仙界|天庭|凌霄|界碑关|时空乱流)/;
@@ -317,6 +440,8 @@ function looksLikeDescription(segment) {
         return true;
     if (/[，。；！？、]/.test(segment))
         return true;
+    if (isTimeLikeName(segment))
+        return true;
     for (const marker of DESCRIPTION_MARKERS) {
         if (segment.includes(marker))
             return true;
@@ -325,6 +450,39 @@ function looksLikeDescription(segment) {
         return true;
     if (/^(有|无|见|听|闻|但|而|却|且|因|遂|乃|则|其|此|那|这)/.test(segment))
         return true;
+    return false;
+}
+/** 「戌时铜灯将尽」「23点」这类时刻/更点，AI 偶尔会把它当成当前地点写进来 */
+function isTimeLikeName(name) {
+    return /^(子|丑|寅|卯|辰|巳|午|未|申|酉|戌|亥)时/.test(name) || /^[0-9０-９]{1,3}(点|时)(半|整)?/.test(name);
+}
+/**
+ * 「整个名字就是垃圾」的强判定（供底图自动清洗用，比 looksLikeDescription 更保守）：
+ *   · 名字里带逗号/顿号 —— 地点与描述没切开（慈宁宫西暖阁,戌时铜灯将尽）；
+ *   · 空格后面跟着描述（官道西段浅谷至缓坡 官道石面阵纹稀疏）；
+ *   · 整串是个时刻（戌时铜灯已燃）；
+ *   · 名字长得离谱（≥12 字）或含典型描写词。
+ * 只对自动生成的节点清理，种子/预设/人工/锁定一律不碰。
+ */
+function isJunkLocationName(name) {
+    const text = (name ?? '').trim();
+    if (!text)
+        return true;
+    if (/[，,、;；]/.test(text))
+        return true;
+    const spaceParts = text.split(/\s+/).filter(Boolean);
+    if (spaceParts.length >= 2 && looksLikeDescription(spaceParts[spaceParts.length - 1]))
+        return true;
+    if (isTimeLikeName(text))
+        return true;
+    if (/(之后|以前|以后)$/.test(text))
+        return true;
+    if (text.length >= 12)
+        return true;
+    for (const marker of ['明灭', '流转', '氤氲', '萦绕', '斜落', '映亮', '低垂', '漫开', '泛着', '拍打', '热气', '褪色']) {
+        if (text.includes(marker))
+            return true;
+    }
     return false;
 }
 /** 从「距神都七百亿里」这类文本里抽方向与距离，供 AI 布局时做提示（不直接决定坐标） */
@@ -338,11 +496,11 @@ function parseBearing(text) {
     return { dirs, distance: distanceMatch ? Number(distanceMatch[1]) : undefined };
 }
 //# sourceMappingURL=path.js.map
-return { normalize, stripEntryPrefix, cutDescription, splitSegments, joinSegments, nodeId, isBearingSegment, isImmortalRealmName, isTrivialFacility, looksLikeDescription, parseBearing };
+return { normalize, stripEntryPrefix, cutDescription, splitSegments, joinSegments, nodeId, isBearingSegment, isImmortalRealmName, isTrivialFacility, looksLikeDescription, isTimeLikeName, isJunkLocationName, parseBearing };
 });
 __def("./graph.js", () => {
 const { BASE_MAP_SCHEMA, COORD_CENTER, COORD_MAX, COORD_MIN, LAYER_RADIUS, LOC_SEP, tierOfKind } = __req('./types.js');
-const { isBearingSegment, isImmortalRealmName, isTrivialFacility, looksLikeDescription, nodeId, normalize, joinSegments, splitSegments } = __req('./path.js');
+const { isBearingSegment, isImmortalRealmName, isJunkLocationName, isTrivialFacility, looksLikeDescription, nodeId, normalize, joinSegments, splitSegments } = __req('./path.js');
 /** 段名别名表：把世界书与变量里的不同叫法归到一个节点上 */
 const SEGMENT_ALIASES = {
     中州: '中央神州',
@@ -352,6 +510,10 @@ const SEGMENT_ALIASES = {
     皇城: '宫城区',
     内城: '四区',
     百花谷: '百花坊',
+    // AI 偶尔把王朝与都城写成一段、或漏掉王朝层、或把「全国」当根 —— 都会建出平行树
+    大周神都: '神都',
+    大周: '大周仙朝',
+    全国: '',
 };
 /** 路径别名：把「世界书叫法」映射到「种子/已有底图的写法」，避免同一地点被建成两棵树
  *  注意：方位词（东南部/西部…）不再作为容器节点，所以要映射到真实的父节点上。 */
@@ -520,6 +682,41 @@ class MapGraph {
         return best;
     }
     /**
+     * 近名子节点：只在「双方都是轨迹自动生成且未确认」时认领（见 similarName）。
+     * 专治 AI 把同一处写出两种叫法（渡口茶棚/渡口茶摊）——不合并就会生成两个点，
+     * 轨迹在两点之间来回打乒乓，坐标书里也会多出一条重复条目。
+     */
+    findFuzzyChild(parentId, name) {
+        if (name.length < 3)
+            return undefined;
+        for (const child of this.children(parentId)) {
+            if (child.source !== 'trail' || child.status !== 'unplaced' || child.locked)
+                continue;
+            if (similarName(child.name, name))
+                return child;
+        }
+        return undefined;
+    }
+    /**
+     * 「大周神都」= 子级「大周仙朝」+ 孙级「神都」被 AI 拼成了一段。
+     * 尝试把这一段拆成两级认领到现有树上；只认领已存在的节点，绝不据此新建。
+     */
+    claimMerged(parent, segment) {
+        if (segment.length < 3)
+            return undefined;
+        for (const child of this.children(parent.id)) {
+            if (segment === child.name || !segment.startsWith(child.name))
+                continue;
+            const rest = segment.slice(child.name.length);
+            if (!rest)
+                continue;
+            const grand = this.findChild(child.id, rest) ?? this.findDescendantByName(child.id, rest, 1);
+            if (grand)
+                return grand;
+        }
+        return undefined;
+    }
+    /**
      * 在 parentId 下面最多往下 skip 层找同名节点。
      * 游戏正文经常省略中间层级（例如只写「神都·慈宁宫东暖阁」，而底图里慈宁宫挂在 神都·宫城区 下），
      * 没有这一步就会在错误的位置重复建点。
@@ -637,7 +834,10 @@ class MapGraph {
                 // 自动建点时不要"马厩/水井/某某客房"这种无意义小点 —— 直接停在上一级
                 if ((source === 'trail' || source === 'ai') && isTrivialFacility(segment))
                     break;
-                const child = this.findChild(deepest.id, segment) ?? this.findDescendantByName(deepest.id, segment, 2);
+                const child = this.findChild(deepest.id, segment) ??
+                    this.findDescendantByName(deepest.id, segment, 2) ??
+                    this.claimMerged(deepest, segment) ??
+                    (source === 'trail' ? this.findFuzzyChild(deepest.id, segment) : undefined);
                 if (child) {
                     deepest = child;
                     continue;
@@ -657,8 +857,16 @@ class MapGraph {
         for (const segment of segments) {
             if (parent && parent.depth + 1 >= MAX_AUTO_DEPTH)
                 break;
+            // 首段整个是垃圾名（AI 把时刻/描述当成当前地点写进来）→ 这个地点串放弃，不建点
+            if (!parent && isJunkLocationName(segment))
+                return null;
             const parentId = parent ? parent.id : null;
-            const child = this.findChild(parentId, segment) ?? (parentId ? this.findDescendantByName(parentId, segment, 2) : undefined);
+            const child = parent
+                ? this.findChild(parentId, segment) ??
+                    this.findDescendantByName(parentId, segment, 2) ??
+                    this.claimMerged(parent, segment) ??
+                    (source === 'trail' ? this.findFuzzyChild(parentId, segment) : undefined)
+                : undefined;
             if (child) {
                 parent = child;
                 continue;
@@ -673,7 +881,11 @@ class MapGraph {
         }
         return parent ? { node: parent, created, segments } : null;
     }
-    /** 自动落点：围绕父节点的向日葵螺旋；半径自适应父节点的局部格子 */
+    /**
+     * 自动落点：围绕父节点的向日葵螺旋；半径自适应父节点的局部格子。
+     * 名字里带方位词的（「车州渡西南三百里」「官道东段」）朝那个方向落 —— 方位是正文里
+     * 最可靠的免费信息，比哈希随机角靠谱得多；距离数字不可信（口径夸张约千倍），只取方向。
+     */
     autoPlace(parent, name) {
         const depth = parent ? parent.depth + 1 : 0;
         const base = LAYER_RADIUS[Math.min(depth, LAYER_RADIUS.length - 1)] || 40;
@@ -681,8 +893,11 @@ class MapGraph {
         const radius = Math.max(0.35, Math.min(base, cell * 0.42));
         const siblings = this.children(parent?.id ?? null).length;
         const golden = 2.399963229728653;
-        const angle = siblings * golden + (hashUnit(name) - 0.5) * 0.6;
-        const distance = radius * (0.5 + 0.5 * Math.sqrt((siblings % 7) / 7 + 0.2));
+        const jitter = (hashUnit(name) - 0.5) * 0.5;
+        const bearing = bearingOf(name);
+        const angle = bearing ? Math.atan2(bearing[1], bearing[0]) + jitter : siblings * golden + (hashUnit(name) - 0.5) * 0.6;
+        // 方位点稍微离父点远一点，避免压在父点头上；普通点维持原来的疏密节奏
+        const distance = radius * (bearing ? 1.15 : 0.5 + 0.5 * Math.sqrt((siblings % 7) / 7 + 0.2));
         const center = parent ? parent.xy : COORD_CENTER;
         return [clamp(center[0] + Math.cos(angle) * distance), clamp(center[1] + Math.sin(angle) * distance)];
     }
@@ -752,6 +967,62 @@ function hashUnit(text) {
     }
     return (hash % 1000) / 1000;
 }
+/** 八方位向量；四字复合方位先查，单字后查（「东南」优先于「南」） */
+const BEARINGS = [
+    ['东南', [0.707, 0.707]],
+    ['西南', [-0.707, 0.707]],
+    ['西北', [-0.707, -0.707]],
+    ['东北', [0.707, -0.707]],
+    ['东', [1, 0]],
+    ['南', [0, 1]],
+    ['西', [-1, 0]],
+    ['北', [0, -1]],
+];
+/** 从地名里解析方位词（「渡口西南三百里」→ 西南）；没有就返回 null */
+function bearingOf(name) {
+    for (const [key, vec] of BEARINGS) {
+        if (name.includes(key))
+            return vec;
+    }
+    return null;
+}
+/**
+ * 名字近似（编辑距离 ≤ 1，如「渡口茶棚」vs「渡口茶摊」）→ 大概率是 AI 对同一处的两种写法。
+ * 只对双方都是轨迹自动生成且未确认的节点做合并；已确认/人工/AI 铺的点绝不误伤。
+ */
+function similarName(a, b) {
+    if (a === b)
+        return true;
+    if (!a || !b || Math.abs(a.length - b.length) > 1)
+        return false;
+    if (a.length === b.length) {
+        let diff = 0;
+        for (let index = 0; index < a.length; index++) {
+            if (a[index] !== b[index]) {
+                diff++;
+                if (diff > 1)
+                    return false;
+            }
+        }
+        return diff === 1;
+    }
+    const [shorter, longer] = a.length < b.length ? [a, b] : [b, a];
+    let i = 0;
+    let j = 0;
+    let skipped = false;
+    while (i < shorter.length && j < longer.length) {
+        if (shorter[i] === longer[j]) {
+            i++;
+            j++;
+            continue;
+        }
+        if (skipped)
+            return false;
+        skipped = true;
+        j++;
+    }
+    return true;
+}
 function toBaseMap(graph, previous) {
     return {
         schemaVersion: BASE_MAP_SCHEMA,
@@ -773,11 +1044,13 @@ function tierOf(node) {
  * 底图清洗（每次加载/保存前都跑）：
  *   1. 剔除纯方位节点（西部/东南部…），其子节点上提到祖父，路径重算
  *   2. 剔除仙界节点及其整棵子树 —— 当前舞台是玄天界
- *   3. 合并重复节点：同名 + 路径互相包含 + 坐标几乎重合 → 只留一个，子节点迁移
- *   4. 重算 id/path/depth（上提与合并都会改变层级）
+ *   3. 剔除「垃圾名」节点（名字里带逗号/整串是时刻/离谱长名）——AI 把描述写进地名、
+ *      把时刻当地点都会在这里清掉；种子/预设/人工/锁定一律不碰
+ *   4. 合并重复节点：同名 + 路径互相包含 + 坐标几乎重合 → 只留一个，子节点迁移
+ *   5. 重算 id/path/depth（上提与合并都会改变层级）
  */
 function sanitizeNodes(input) {
-    const report = { removedBearing: 0, removedImmortal: 0, merged: 0, total: input.length };
+    const report = { removedBearing: 0, removedImmortal: 0, removedJunk: 0, merged: 0, total: input.length };
     const originalChildren = new Map();
     for (const node of input) {
         const key = node.parentId ?? '^';
@@ -794,6 +1067,14 @@ function sanitizeNodes(input) {
         effectiveParent.set(node.id, node.parentId ?? null);
         if (isImmortalRealmName(node.name))
             immortal.add(node.id);
+        // 垃圾名：只清自动生成的（轨迹/AI），种子、预设、人工、锁定一律不碰
+        if (!node.locked &&
+            (node.source === 'trail' || node.source === 'ai') &&
+            node.name &&
+            isJunkLocationName(node.name)) {
+            removed.add(node.id);
+            report.removedJunk++;
+        }
     }
     let grew = true;
     while (grew) {
@@ -816,6 +1097,14 @@ function sanitizeNodes(input) {
         const grand = effectiveParent.get(node.id) ?? null;
         for (const child of originalChildren.get(node.id) ?? []) {
             if (!immortal.has(child.id))
+                effectiveParent.set(child.id, grand);
+        }
+    }
+    // 垃圾名节点与方位节点一样：自己消失，子节点上提
+    for (const id of [...removed]) {
+        const grand = effectiveParent.get(id) ?? null;
+        for (const child of originalChildren.get(id) ?? []) {
+            if (!immortal.has(child.id) && !removed.has(child.id))
                 effectiveParent.set(child.id, grand);
         }
     }
@@ -927,7 +1216,7 @@ function sanitizeNodes(input) {
     return { nodes: out, report };
 }
 //# sourceMappingURL=graph.js.map
-return { SEGMENT_ALIASES, PATH_ALIASES, MAX_AUTO_DEPTH, applyPathAliases, isVec2, MapGraph, toBaseMap, normalize, tierOf, sanitizeNodes };
+return { SEGMENT_ALIASES, PATH_ALIASES, MAX_AUTO_DEPTH, applyPathAliases, isVec2, MapGraph, bearingOf, similarName, toBaseMap, normalize, tierOf, sanitizeNodes };
 });
 __def("./trail.js", () => {
 const { COORD_MAX, COORD_MIN } = __req('./types.js');
@@ -1060,7 +1349,9 @@ function rebuildTrail(options) {
         const source = locationRaw ?? loose;
         if (!source && !info.mapVar?.坐标)
             return;
-        const pathText = normalize(source ?? '');
+        // 「AI 整理本会话地点」的规范化结果优先：命中就绕过脏字符串直接用干净路径
+        const fix = source ? options.pathFixes?.[normalize(source)] : undefined;
+        const pathText = fix?.path ?? normalize(source ?? '');
         const resolved = pathText ? graph.resolve(pathText, { create: true, source: 'trail' }) : null;
         if (resolved?.created)
             createdNodes++;
@@ -1093,6 +1384,14 @@ function rebuildTrail(options) {
         }
         else if (node.source !== 'trail' || node.status === 'ok') {
             posSrc = 'lookup';
+        }
+        // 整理结果里带了相对坐标、且这一层没有更可靠的来源 → 用它兜底
+        if (posSrc === 'auto' && fix && Number.isFinite(Number(fix.x)) && Number.isFinite(Number(fix.y)) && !node.locked) {
+            xy = [Number(fix.x), Number(fix.y)];
+            posSrc = 'ai';
+            node.xy = xy;
+            if (node.status === 'unplaced' && node.source === 'trail')
+                node.status = 'ok';
         }
         if (typeof info.mapVar?.高度 === 'number')
             node.altitude = info.mapVar.高度;
@@ -1160,6 +1459,31 @@ function distance(a, b) {
     const dy = a[1] - b[1];
     return Math.sqrt(dx * dx + dy * dy);
 }
+/**
+ * 收集本会话出现过的**原始地点串**（去重、保序），供「AI 整理本会话地点」发给模型。
+ * 只取结构化来源（世界.当前地点 / 地图.层级）；正文兜底那种太脏，不进 AI 清单。
+ */
+function collectRawLocations(messages, limit = 120) {
+    const seen = new Set();
+    const out = [];
+    for (const message of messages) {
+        if (!message || message.is_user)
+            continue;
+        const info = extractMessageMapInfo(String(message.message ?? ''));
+        const raw = info.location ?? info.mapVar?.层级;
+        const text = typeof raw === 'string' ? raw.trim() : '';
+        if (!text)
+            continue;
+        const key = normalize(text);
+        if (seen.has(key))
+            continue;
+        seen.add(key);
+        out.push(text);
+        if (out.length >= limit)
+            break;
+    }
+    return out;
+}
 /** 把轨迹里连续重复的坐标合并，供画线使用 */
 function polylinePoints(points, hidden) {
     const visible = points.filter(point => !hidden.has(point.id));
@@ -1175,10 +1499,10 @@ function polylinePoints(points, hidden) {
     return result;
 }
 //# sourceMappingURL=trail.js.map
-return { repairJson, parseJsonPatch, extractMessageMapInfo, extractLooseLocation, rebuildTrail, distance, polylinePoints };
+return { repairJson, parseJsonPatch, extractMessageMapInfo, extractLooseLocation, rebuildTrail, distance, collectRawLocations, polylinePoints };
 });
 __def("./store.js", () => {
-const { DEFAULT_LAYOUT, DEFAULT_SETTINGS, KEY_BASE_MAP, KEY_TRAIL, migrateBaseMap } = __req('./types.js');
+const { DEFAULT_COORD_BOOK, DEFAULT_GEO_CONTEXT, DEFAULT_LAYOUT, DEFAULT_MOVEMENT_RULES, DEFAULT_NARRATIVE_RULES, DEFAULT_SETTINGS, KEY_BASE_MAP, KEY_TRAIL, LAYOUT_SUPPLEMENT_DEFAULT, migrateBaseMap } = __req('./types.js');
 const LOCAL_PREFIX = 'worldmap_map_local_';
 function readLocal(key) {
     try {
@@ -1226,6 +1550,18 @@ function writeScope(key, value, scope) {
  */
 const LEGACY_KEY_BASE_MAP = 'daoyuan_map_v1';
 const LEGACY_KEY_TRAIL = 'daoyuan_trail_v1';
+/**
+ * 两层分界：底图（角色卡变量，跨会话）只存「设定 + 人工确认」的节点；
+ * 轨迹来源且未锁定的节点属于**轨迹层**，随聊天变量走（trail.nodes）。
+ * 内存里两者合成一棵树，持久化时按这条线劈开。
+ */
+function isBaseMapNode(node) {
+    return node.source !== 'trail' || node.locked === true;
+}
+/** 轨迹层节点（与 isBaseMapNode 互补） */
+function isTrailLayerNode(node) {
+    return !isBaseMapNode(node);
+}
 function loadBaseMap() {
     const map = readScope(KEY_BASE_MAP, 'character') ??
         readScope(KEY_BASE_MAP, 'chat') ??
@@ -1233,32 +1569,52 @@ function loadBaseMap() {
         readScope(LEGACY_KEY_BASE_MAP, 'chat');
     if (!map || !Array.isArray(map.nodes))
         return null;
-    return migrateBaseMap(map);
+    // 底图里不允许混轨迹层节点：老版本存进来的轨迹点在读取时直接丢弃（按新架构用「从聊天记录重算」重建）
+    const cleaned = { ...map, nodes: map.nodes.filter(isBaseMapNode) };
+    return migrateBaseMap(cleaned);
 }
 function saveBaseMap(map) {
-    const ok = writeScope(KEY_BASE_MAP, map, 'character');
+    const cleaned = { ...map, nodes: (map.nodes ?? []).filter(isBaseMapNode) };
+    const ok = writeScope(KEY_BASE_MAP, cleaned, 'character');
     if (!ok)
-        writeScope(KEY_BASE_MAP, map, 'chat');
+        writeScope(KEY_BASE_MAP, cleaned, 'chat');
     return ok;
 }
 function loadTrail() {
     const trail = readScope(KEY_TRAIL, 'chat') ?? readScope(LEGACY_KEY_TRAIL, 'chat');
     if (!trail || !Array.isArray(trail.points))
         return null;
-    return trail;
+    return { ...trail, nodes: Array.isArray(trail.nodes) ? trail.nodes : [] };
 }
 function saveTrail(trail) {
     writeScope(KEY_TRAIL, trail, 'chat');
 }
+/**
+ * 坐标书设置合并：老存档缺字段、或规则文本框是空串时，一律回退到**内置默认规则文本**——
+ * 用户打开设置就能看到两段规则，不需要再去文档里手动复制。
+ */
+function mergeCoordBook(stored) {
+    const merged = { ...DEFAULT_COORD_BOOK, ...(stored ?? {}) };
+    if (!merged.movementRules)
+        merged.movementRules = DEFAULT_MOVEMENT_RULES;
+    if (!merged.narrativeRules)
+        merged.narrativeRules = DEFAULT_NARRATIVE_RULES;
+    return merged;
+}
 function loadSettings() {
     const stored = readScope('settings', 'script') ?? readScope('settings', 'global');
     if (!stored)
-        return { ...DEFAULT_SETTINGS, api: { ...DEFAULT_SETTINGS.api } };
+        return { ...DEFAULT_SETTINGS, api: { ...DEFAULT_SETTINGS.api }, geoContext: { ...DEFAULT_GEO_CONTEXT }, coordBook: mergeCoordBook(null) };
     return {
         ...DEFAULT_SETTINGS,
         ...stored,
         schemaVersion: 1,
         api: { ...DEFAULT_SETTINGS.api, ...(stored.api ?? {}) },
+        // 二期新字段：老存档没有这两块，用默认值补齐（缺省关自动同步、开态势注入）
+        geoContext: { ...DEFAULT_GEO_CONTEXT, ...(stored.geoContext ?? {}) },
+        coordBook: mergeCoordBook(stored.coordBook),
+        // 方位补充表：老存档没有就给内置默认；用户清空过（空串）则尊重空串
+        layoutSupplement: stored.layoutSupplement ?? LAYOUT_SUPPLEMENT_DEFAULT,
     };
 }
 function saveSettings(settings) {
@@ -1289,7 +1645,7 @@ function describeContext() {
     return { chat, character };
 }
 //# sourceMappingURL=store.js.map
-return { readScope, writeScope, loadBaseMap, saveBaseMap, loadTrail, saveTrail, loadSettings, saveSettings, loadLayout, saveLayout, describeContext };
+return { readScope, writeScope, isBaseMapNode, isTrailLayerNode, loadBaseMap, saveBaseMap, loadTrail, saveTrail, loadSettings, saveSettings, loadLayout, saveLayout, describeContext };
 });
 __def("./seed.js", () => {
 const { nodeId } = __req('./path.js');
@@ -1513,7 +1869,7 @@ async function resolveInitialBaseMap(options) {
 return { seedBaseMap, mergeBaseMaps, fetchPresetMap, resolveInitialBaseMap };
 });
 __def("./layout-ai.js", () => {
-const { COORD_MAX, COORD_MIN } = __req('./types.js');
+const { COORD_MAX, COORD_MIN, GEO_ENTRY_PREFIX, WORLDMAP_BOOK } = __req('./types.js');
 const { isBearingSegment, isTrivialFacility, looksLikeDescription } = __req('./path.js');
 /**
  * 条目名以这些词开头 → 算地点类条目。
@@ -1523,6 +1879,7 @@ const { isBearingSegment, isTrivialFacility, looksLikeDescription } = __req('./p
  * `地点：`/`势力详情：`，结果一整批「势力」条目被漏掉，底图上没有这些宗门。
  */
 const LOCATION_COMMENT = /^(地点|势力|秘境详情|妖族势力|设施[-—]|区域[-—])/;
+/** 地点类条目正文的特征（导出给自测：坐标条目的 content 必须避开这些写法） */
 const LOCATION_CONTENT = /(驻地\s*[:：]|位置\s*[:：]|相对距离\s*[:：]|空间距离\s*[:：]|距[^，。；]{1,12}[0-9０-９]+\s*亿里)/;
 /** 仙界相关条目：当前剧情舞台是玄天界，整套跳过 */
 const IMMORTAL_ENTRY = /(仙界|仙域|天庭|瑶池|凌霄|界碑关)/;
@@ -1534,6 +1891,9 @@ function entryTitle(comment) {
 }
 function isLocationEntry(comment, content) {
     const name = entryTitle(comment);
+    // 自己生成的坐标条目（[舆图] 前缀）绝不是资料 —— 双保险，正常情况下书名已被剔除
+    if (name.startsWith(GEO_ENTRY_PREFIX))
+        return false;
     if (IMMORTAL_ENTRY.test(name))
         return false;
     if (LOCATION_COMMENT.test(name))
@@ -1562,6 +1922,9 @@ async function collectLocationEntries() {
     catch (error) {
         window.console.warn('[世界舆图] 读取全局世界书名失败', error);
     }
+    // 关键隔离：插件自建的《世界舆图·坐标表》绝不能当成资料 ——
+    // 否则布局 AI 会把自己的坐标条目当输入，自我循环、越铺越歪。
+    names.delete(WORLDMAP_BOOK);
     const entries = [];
     let total = 0;
     for (const book of names) {
@@ -1619,6 +1982,11 @@ function selectEntries(entries, scope, focusPath) {
 }
 const SYSTEM_PROMPT = `你是一个修仙世界的地理测绘助手。你要把给定的世界观资料整理成**十字坐标轴上的节点**，输出严格 JSON。
 
+【输入分三层，按优先级使用】
+1. **方位补充表**（用户整理的方位/距离，最高优先）：先完全按它落点；
+2. **坐标系骨架**：原点与四域中心固定（见下）；中州四界除非与补充表直接冲突，否则沿用；
+3. **世界观资料**（世界书条目）：用来**校验**补充表是否合理，并补充表里没有的地点。
+
 【只画玄天界】
 - 本次只测绘「玄天界」。资料里凡属于**仙界/仙域/天庭/瑶池/凌霄**的内容一律**不要**输出。
 - 玄天界 = 中央神州居中，四方为东极青木域、南离火洲、西漠佛国、北冥雪原。
@@ -1636,17 +2004,28 @@ const SYSTEM_PROMPT = `你是一个修仙世界的地理测绘助手。你要把
 - 只有方位没有距离时，按方位给合理偏移（东南方就 x+40、y+40 之类），宁可粗略也不要留空。
 - 同一父级下的兄弟节点必须彼此分开，不要重叠。
 
+【工作流：先落补充表 → 再校验 → 再出图】
+- 第一步（落表）：把方位补充表里每一条按「方位 → 角度、亿里 ÷15 → 格」换算成坐标，以神都为圆心铺开。
+  方位照字面理解：东南 = +x+y 各占一半；北偏西 = -y 为主、略偏 -x；极北 = 正北拉满；
+  「无记录」但有相对线索的（距某地 N、靠近某地），用相对线索定位。
+- 第二步（精修）：括号里的相对线索必须用上——
+  「距某地 N 亿里」= 以该地为圆心 N/15 格的圆；
+  「正上方 / 正下方」= 同 xy 不同高度，写进 altitude（单位「里」，亿里 ×10^8）；
+  「向某方向 N 亿里到某地 / 边界」= 从该地沿该方向平移 N/15 格；
+  「宽 N 亿里」= 该边界地物的跨度 N/15 格。
+  多条线索联立（例：「甲宗东南 1200 亿里」+「甲宗向东 400 亿里到东界山脉」+「山脉是中州边界」）
+  时解交集——能得到唯一解就用它。
+- 第三步（校验）：逐个节点拿世界书条目对照——
+  · 方向或量级矛盾 → **以补充表为准**，并把冲突写进该节点 note（例：「资料冲突：条目记 600 亿里，按补充表 800 亿里取」）；
+  · 条目里补充表没有的地点、区域轮廓（shape）、内部结构 → 正常按条目定位（相互印证、宁可贴上级、禁止编造）；
+  · 完全无线索 → 挂最合理上级附近，note 写明「资料未给方位，按上级估算」。
+- 冲突裁决顺序：**相对神都的方位+距离 > 补充表内的相对关系 > 世界书条目**。
+  两条相对线索联立无解（两圆不相交）时：满足靠前的那条，另一条连同原因写进 note。
+
 【第一件事：把该有的都找齐，一个都不能漏】
 - 资料里**每一条以「地点」「势力」开头的条目，都必须产出一个节点**。有 20 条就出 20 个，
   不许因为「不好定位」就跳过。同一个地方在两条资料里重复出现的，合并成一个。
 - 输出前自己核对一遍：条目数 ≈ 节点数。
-
-【第二件事：坐标要有依据，不许编】
-- 先把**所有条目正文**里的方位、距离、相邻关系（「在X东北约300亿里」「紧邻Y」「位于Z腹地」）找出来，
-  让不同条目**相互印证**：A 条说它在神都以东、B 条说它挨着沂云森林，就结合两条一起定坐标。
-- 只有一处资料提到它时，用那处给出的「相对某个已知地点的方向+距离」推算。
-- 完全没有任何方位线索时，挂到最合理的上级节点附近，并在 note 里写明「资料未给方位，按上级估算」。
-- **禁止为了凑数随手编坐标**。宁可贴着上级放，也不要凭空给一个看起来精确的数。
 
 【第三件事：分清楚「省」和「市」—— 这里最容易画错】
 资料里这两类的体量差着两个数量级，**绝不能都画成一样大的点**：
@@ -1668,7 +2047,9 @@ const SYSTEM_PROMPT = `你是一个修仙世界的地理测绘助手。你要把
 - **纯方位词**：东部/南部/西部/北部/东南部/西南部/东北部/西北部/极东/极西/中部/中域腹地/腹地 —— 这些只表示方向，
   **不要把方位词单独输出成一个节点**，也不要用它当父路径的中间层。例如「中央神州·西部·蜀山剑门」要输出成
   「中央神州·蜀山剑门」，位置按「向西 700 亿里」算即可。
-- 环境描述（含「的」「半垂」「明灭」这类描写的短句）。
+- **资料里没有明说的子区域**：某宗「外城/内城/分部/外围」、某地「半空/上空/深处」这类衍生词——
+  条目原文没明确写出这个子地点，就宁可只留上级，**严禁自行拆分或造点**。
+- 环境描述（含「的」「半垂」「明灭」这类描写的短句）与时刻（戌时铜灯将尽这类）。
 - 零碎设施：马厩、柴房、水井、后院、某某客房、某某铺子、某家门口。**不要输出 room 这一级**，
   它们只会把地图糊成一团。
 - 重复地点：同一个地方只输出一次，用资料里最完整的那个名字。
@@ -1703,12 +2084,13 @@ const ALLOWED_AI_KINDS = ['realm', 'region', 'city', 'power', 'site'];
 function buildLayoutPrompt(entries, options) {
     const budget = options.budget ?? 24000;
     const scopeLabel = options.scope === 'world' ? '世界骨架（大域/大势力/主要城池）' : options.scope === 'region' ? `区域细分：${options.focusPath ?? ''}` : '全部地点';
-    const header = `任务：绘制【${scopeLabel}】。\n\n已知节点（不要改动它们的坐标，只补充新节点）：\n`;
-    const known = options.existing
-        .filter(node => node.depth <= 3)
-        .slice(0, 120)
-        .map(node => `${node.path} (${node.xy[0]},${node.xy[1]})`)
-        .join('\n');
+    // 生成底图是「一次性设定铺点」：输入只有方位补充表 + 世界书条目 + 提示词里的固定锚点，
+    // 不再罗列已有节点（聊天轨迹点绝不能进来，正式底图点靠合并时的同名认领保证不叠加）。
+    const header = `任务：绘制【${scopeLabel}】。\n`;
+    const supplement = (options.layoutSupplement ?? '').trim();
+    const supplementSection = supplement
+        ? `\n\n【方位补充表】（最高优先依据：先完全按它落点，再用下面的世界观资料校验合理性与补充细节）\n${supplement}\n`
+        : '';
     let used = 0;
     const chunks = [];
     for (const entry of entries) {
@@ -1719,7 +2101,7 @@ function buildLayoutPrompt(entries, options) {
         used += chunk.length;
         chunks.push(chunk);
     }
-    const user = `${header}${known}\n\n世界观资料：\n${chunks.join('')}\n\n请输出 JSON。`;
+    const user = `${header}${supplementSection}\n\n世界观资料（校验与补充用）：\n${chunks.join('')}\n\n请输出 JSON。`;
     return { system: SYSTEM_PROMPT, user, used, total: entries.length };
 }
 /** 宽容解析：剥围栏 → 直接 parse → 修复后再 parse */
@@ -1899,7 +2281,11 @@ async function runLayout(graph, settings, scope, focusPath, onProgress) {
         throw new Error(`世界书里读到了 ${entries.length} 条地点类条目，但这一档（${scope === 'world' ? '世界骨架' : scope === 'region' ? '当前区域' : '全部'}）没筛出可用的。` +
             `换个档位试试，或先用「全部地点」。`);
     }
-    const prompt = buildLayoutPrompt(picked, { scope, focusPath, existing: graph.toArray() });
+    const prompt = buildLayoutPrompt(picked, {
+        scope,
+        focusPath,
+        layoutSupplement: settings.layoutSupplement,
+    });
     onProgress?.(`已选 ${prompt.total} 条资料（约 ${Math.round(prompt.used / 1000)}k 字符），正在请求模型…`);
     const { text } = await requestLayout(settings, prompt);
     const nodes = parseLayoutReply(text);
@@ -1914,60 +2300,650 @@ function graphToBaseMapPatch(graph, base) {
     base.updatedAt = new Date().toISOString();
     return base;
 }
+// ── AI 整理本会话地点（聊天中途装插件的一次性补救）─────────────────────
+const HISTORY_SYSTEM = `你是修仙世界的地名整理助手。输入是逐条「当前地点」原文——它们可能混着环境描述、时刻、
+被拼在一起的层级、方位词，你要把每一条规范化成干净的地名层级路径。
+
+【规则】
+· 路径用「·」连接、从大到小。示例：全国·中央神州·大周神都·宣武门外官道 → 中央神州·大周仙朝·神都·宣武门外官道。
+· 丢掉环境描述与时刻尾巴：「慈宁宫西暖阁,戌时铜灯将尽」→ 慈宁宫西暖阁。
+· 丢掉纯方位层（东南部/西部/全国）；拆开被拼成一段的层级（大周神都 → 大周仙朝·神都）。
+· 尽量套用【已知设定地点】里的既有写法；设定里确实没有的地点（客栈茶棚这类玩出来的地方）
+  挂在最合理的上级或参照地之下，不要发明设定里没有的子区域。
+· 输出条目与输入**一一对应、顺序不变**，不得增删。
+
+【输出格式】只输出 JSON，不要解释：
+{"items":[{"raw":"输入原文","path":"规范化路径","x":12.5,"y":-3.2}]}
+x/y 只对「已知设定地点里没有的地点」给出：按原文里的方位词与相对参照（距某地若干里）估算——
+1 单位=15 亿里、数字有约千倍夸张按字面换算；没有把握就省略 x/y，设定里已有的地点一律不要给。`;
+function buildHistoryPrompt(raws, knownPaths, budget = 16000) {
+    const known = knownPaths.slice(0, 200).join('\n');
+    const list = raws.map((raw, index) => `${index + 1}. ${raw}`).join('\n');
+    const user = `【已知设定地点】\n${known || '（暂无）'}\n\n【本会话原始地点串】\n${list}\n\n请输出 JSON。`;
+    return { system: HISTORY_SYSTEM, user, used: Math.min(user.length, budget), total: raws.length };
+}
+/** 宽容解析历史整理回复；只接受 raw 能对回输入清单的条目 */
+function parseHistoryReply(text, validRaws) {
+    const candidates = [];
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fenced)
+        candidates.push(fenced[1]);
+    candidates.push(text);
+    const firstBrace = text.indexOf('{');
+    if (firstBrace >= 0)
+        candidates.push(text.slice(firstBrace));
+    for (const candidate of candidates) {
+        const body = candidate.trim();
+        for (const attempt of [body, repairJsonLoose(body)]) {
+            try {
+                const parsed = JSON.parse(attempt);
+                const items = Array.isArray(parsed?.items) ? parsed.items : [];
+                const fixes = [];
+                for (const item of items) {
+                    const raw = String(item?.raw ?? '').trim();
+                    const path = String(item?.path ?? '').trim();
+                    if (!raw || !path || !validRaws.has(raw))
+                        continue;
+                    const x = Number(item?.x);
+                    const y = Number(item?.y);
+                    fixes.push({
+                        raw,
+                        path,
+                        x: Number.isFinite(x) ? x : undefined,
+                        y: Number.isFinite(y) ? y : undefined,
+                    });
+                }
+                if (fixes.length)
+                    return fixes;
+            }
+            catch {
+                /* 试下一种 */
+            }
+        }
+    }
+    return [];
+}
 //# sourceMappingURL=layout-ai.js.map
-return { entryTitle, isLocationEntry, collectLocationEntries, selectEntries, buildLayoutPrompt, parseLayoutReply, mergeAiLayout, requestLayout, runLayout, graphToBaseMapPatch };
+return { LOCATION_CONTENT, entryTitle, isLocationEntry, collectLocationEntries, selectEntries, buildLayoutPrompt, parseLayoutReply, mergeAiLayout, requestLayout, runLayout, graphToBaseMapPatch, buildHistoryPrompt, parseHistoryReply };
+});
+__def("./geo-book.js", () => {
+const { GEO_BOOK_MAX_ENTRIES, GEO_ENTRY_PREFIX, WORLDMAP_BOOK } = __req('./types.js');
+const { PATH_ALIASES, SEGMENT_ALIASES, tierOf } = __req('./graph.js');
+/**
+ * 挑出要进坐标书的节点：
+ *   · tier≤3（界域/地域/城池与宗级势力）全部收；
+ *   · tier4 只收 includeTier4 且已确认定位（status==='ok'）的城内要点；
+ *   · tier5（房间）、unplaced（待定位虚线圈）、被隐藏的一律不进 —— 虚线圈的坐标还没被人工确认，
+ *     写进书里等于把猜测喂给模型。
+ */
+function selectCoordNodes(graph, options) {
+    const hidden = new Set(options.hiddenIds ?? []);
+    return graph
+        .toArray()
+        .filter(node => !hidden.has(node.id))
+        .filter(node => node.status === 'ok')
+        // 剔除轨迹地点：换新对话时不想让上一档玩出来的地名进书（人工拖过的也算轨迹地点）
+        .filter(node => !(options.excludeTrail && node.source === 'trail'))
+        .filter(node => {
+        const tier = tierOf(node);
+        if (tier <= 3)
+            return true;
+        return tier === 4 && options.includeTier4;
+    })
+        .sort((a, b) => tierOf(a) - tierOf(b) || a.depth - b.depth || a.path.localeCompare(b.path, 'zh'));
+}
+/** 坐标显示：保留 1 位小数（0.9 这类城内偏移），整数不带小数点 */
+function fmtCoord(value) {
+    return String(Math.round(value * 10) / 10);
+}
+/**
+ * 绿灯关键词：地名本身 + 别名表里指向它的所有叫法。
+ * 注意不要把父级/大区名塞进来 —— 那会让整个大区的条目在随便提及时全量注入，token 失控。
+ */
+function keysForNode(node) {
+    const keys = new Set();
+    if (node.name)
+        keys.add(node.name);
+    for (const [alias, target] of Object.entries(SEGMENT_ALIASES)) {
+        if (target === node.name)
+            keys.add(alias);
+    }
+    for (const entry of PATH_ALIASES) {
+        const last = entry.replacement[entry.replacement.length - 1];
+        if (last === node.name) {
+            for (const part of entry.pattern) {
+                if (part !== node.name)
+                    keys.add(part);
+            }
+        }
+    }
+    return [...keys];
+}
+/** 蓝灯总纲：原点/轴向/换算 + tier1/2 大域锚点（从底图现算，不写死任何作品专名） */
+function buildOverviewDraft(graph) {
+    const anchors = selectCoordNodes(graph, { includeTier4: false })
+        .filter(node => tierOf(node) <= 2)
+        .slice(0, 24)
+        .map(node => `${node.name}(${fmtCoord(node.xy[0])},${fmtCoord(node.xy[1])})`);
+    const originCandidates = graph
+        .toArray()
+        .filter(node => node.xy[0] === 0 && node.xy[1] === 0 && tierOf(node) <= 3)
+        // (0,0) 上可能同时压着界域/王朝/都城 —— 取最具体的那层：tier 大者优先，同为市级则城池优先、短路径优先
+        .sort((a, b) => tierOf(b) - tierOf(a) ||
+        (b.kind === 'city' ? 1 : 0) - (a.kind === 'city' ? 1 : 0) ||
+        a.path.length - b.path.length);
+    const originName = originCandidates[0]?.name ?? '原点';
+    const content = `[舆图·坐标系] 本世界以「${originName}」为原点 (0,0)：正东 +x、正南 +y，向西/向北为负，范围 -500~500；1 坐标单位 ≈ 15 亿里。\n` +
+        (anchors.length ? `大域锚点：${anchors.join('｜')}\n` : '') +
+        '写坐标时锚点直接采用；锚点外的地点按资料里的方位与距离换算；与上一回合同地时坐标保持不变。';
+    return { name: `${GEO_ENTRY_PREFIX}坐标系总纲`, content, keys: [], constant: true, sticky: 0, depth: 4 };
+}
+/**
+ * 生成整本坐标书的条目草稿：第 0 条是蓝灯总纲，其余是绿灯地点条目。
+ * 地点条目数量受 maxEntries 限制（默认 200），超出部分按排序（tier 优先）截断。
+ */
+function buildCoordDrafts(graph, options = {}) {
+    const includeTier4 = options.includeTier4 !== false;
+    const maxEntries = Math.max(1, options.maxEntries ?? GEO_BOOK_MAX_ENTRIES);
+    const drafts = [buildOverviewDraft(graph)];
+    // 蓝灯规则条目：非空就紧跟总纲（距离换算/赶路方式/叙事地理约束都跟坐标系统同源）
+    const movementRules = (options.movementRules ?? '').trim();
+    if (movementRules) {
+        drafts.push({
+            name: `${GEO_ENTRY_PREFIX}人物移动规则`,
+            content: movementRules,
+            keys: [],
+            constant: true,
+            sticky: 0,
+            depth: 4,
+        });
+    }
+    const narrativeRules = (options.narrativeRules ?? '').trim();
+    if (narrativeRules) {
+        drafts.push({
+            name: `${GEO_ENTRY_PREFIX}叙事地理规则`,
+            content: narrativeRules,
+            keys: [],
+            constant: true,
+            sticky: 0,
+            depth: 4,
+        });
+    }
+    const usedNames = new Set(drafts.map(draft => draft.name));
+    const nodes = selectCoordNodes(graph, {
+        includeTier4,
+        hiddenIds: options.hiddenIds,
+        excludeTrail: options.excludeTrailPlaces,
+    }).slice(0, maxEntries);
+    for (const node of nodes) {
+        let name = `${GEO_ENTRY_PREFIX}${node.name}`;
+        if (usedNames.has(name)) {
+            const parent = node.parentId ? graph.get(node.parentId) : undefined;
+            name = `${GEO_ENTRY_PREFIX}${node.name}·${parent?.name ?? node.id}`;
+        }
+        if (usedNames.has(name))
+            name = `${GEO_ENTRY_PREFIX}${node.path}(${fmtCoord(node.xy[0])},${fmtCoord(node.xy[1])})`;
+        usedNames.add(name);
+        const altitude = typeof node.altitude === 'number' && node.altitude !== 0 ? `｜高度 ${node.altitude} 里` : '';
+        drafts.push({
+            name,
+            // 内容红线：不出现「位置：/驻地：/…亿里」等会命中 layout-ai LOCATION_CONTENT 的写法
+            content: `${node.path} 坐标 (${fmtCoord(node.xy[0])},${fmtCoord(node.xy[1])})${altitude}`,
+            keys: keysForNode(node),
+            constant: false,
+            sticky: 2,
+            depth: 2,
+        });
+    }
+    return drafts;
+}
+/** 草稿 → 酒馆助手条目形状（蓝灯总纲 at_depth 4；绿灯地点 at_depth 2，sticky 2 防止话题延续时断档） */
+function draftToEntry(draft, uid) {
+    return {
+        uid,
+        name: draft.name,
+        enabled: true,
+        strategy: {
+            type: draft.constant ? 'constant' : 'selective',
+            keys: draft.constant ? [] : [...draft.keys],
+            keys_secondary: { logic: 'and_any', keys: [] },
+            scan_depth: draft.constant ? 'same_as_global' : 3,
+        },
+        position: { type: 'at_depth', role: 'system', depth: draft.depth, order: 110 + uid },
+        content: draft.content,
+        probability: 100,
+        // 递归全关：坐标条目不激活别人的设定条目，也不被别人的条目激活
+        recursion: { prevent_incoming: true, prevent_outgoing: true, delay_until: null },
+        effect: { sticky: draft.sticky > 0 ? draft.sticky : null, cooldown: null, delay: null },
+    };
+}
+function buildWorldbookEntries(graph, options = {}) {
+    const drafts = buildCoordDrafts(graph, options);
+    return { drafts, entries: drafts.map(draftToEntry) };
+}
+/** 已有书里的条目（取我们关心的字段）与草稿逐条比对；完全一致才允许跳过写入 */
+function entriesDiffer(existing, drafts) {
+    if (existing.length !== drafts.length)
+        return true;
+    const byName = new Map(existing.map(entry => [String(entry.name ?? ''), entry]));
+    for (const draft of drafts) {
+        const match = byName.get(draft.name);
+        if (!match)
+            return true;
+        if (String(match.content ?? '') !== draft.content)
+            return true;
+        if (String(match.strategy?.type ?? '') !== (draft.constant ? 'constant' : 'selective'))
+            return true;
+        if (!draft.constant) {
+            const keys = (match.strategy?.keys ?? []).map(key => String(key));
+            if (keys.join('\u0001') !== draft.keys.join('\u0001'))
+                return true;
+        }
+    }
+    return false;
+}
+/** 转成 SillyTavern 世界书导入格式（字段形状对照《洛阳扩展》实测样本），供 release 产出手动导入的双件套 */
+function toSillyTavernBook(drafts) {
+    const entries = {};
+    drafts.forEach((draft, index) => {
+        entries[String(index)] = {
+            uid: index,
+            key: draft.constant ? [] : [...draft.keys],
+            keysecondary: [],
+            comment: draft.name,
+            content: draft.content,
+            constant: draft.constant,
+            vectorized: false,
+            selective: !draft.constant,
+            selectiveLogic: 0,
+            addMemo: true,
+            order: 110 + index,
+            position: 4,
+            disable: false,
+            ignoreBudget: false,
+            excludeRecursion: true,
+            preventRecursion: true,
+            matchPersonaDescription: false,
+            matchCharacterDescription: false,
+            matchCharacterPersonality: false,
+            matchCharacterDepthPrompt: false,
+            matchScenario: false,
+            matchCreatorNotes: false,
+            delayUntilRecursion: false,
+            probability: 100,
+            useProbability: true,
+            depth: draft.depth,
+            outletName: '',
+            group: '',
+            groupOverride: false,
+            groupWeight: 100,
+            scanDepth: draft.constant ? null : 3,
+            caseSensitive: null,
+            matchWholeWords: null,
+            useGroupScoring: false,
+            automationId: '',
+            role: 'system',
+            sticky: draft.sticky,
+            cooldown: 0,
+            delay: 0,
+            triggers: [],
+            displayIndex: index,
+            characterFilter: { isExclude: false, names: [], tags: [] },
+        };
+    });
+    return { entries };
+}
+/** 能力探测（对齐小手机 V1.2 的 Yi()）：缺哪层就降级到哪层，绝不盲调不存在的接口 */
+function detectGeoBookCapabilities() {
+    const notes = [];
+    const canList = typeof getWorldbookNames === 'function' && typeof getWorldbook === 'function';
+    if (!canList)
+        notes.push('缺少世界书读取接口');
+    const canCreate = typeof createWorldbook === 'function';
+    if (!canCreate)
+        notes.push('缺少 createWorldbook');
+    const canUpdate = typeof replaceWorldbook === 'function' || typeof updateWorldbookWith === 'function';
+    if (!canUpdate)
+        notes.push('缺少世界书写入接口');
+    const canAttach = typeof getCharWorldbookNames === 'function' && typeof rebindCharWorldbooks === 'function';
+    if (!canAttach)
+        notes.push('缺少角色卡绑定接口 rebindCharWorldbooks');
+    return { canList, canCreate, canUpdate, canAttach, notes };
+}
+/** 写完书后顺手刷新世界书编辑器（前台开着时立刻能看到新条目）；失败静默 */
+function reloadWorldbookEditor() {
+    try {
+        // 只在世界书编辑器**本来就开着**时才原地刷新。无脑调用会把编辑器面板拉到前台
+        // 重新加载 —— 撞上写入中的书就渲染成一块盖住整个酒馆的空面板，
+        // 而且它不是本插件的窗口，没有关闭按钮，用户只能刷新页面（实测踩坑）。
+        const parentDoc = window.parent && window.parent !== window ? window.parent.document : document;
+        const editor = parentDoc.querySelector('#WorldInfo');
+        if (!editor)
+            return;
+        const style = window.parent.getComputedStyle(editor);
+        if (style.display === 'none' || style.visibility === 'hidden')
+            return;
+        const context = SillyTavern
+            ?.getContext?.();
+        context?.reloadWorldInfoEditor?.(WORLDMAP_BOOK, false);
+    }
+    catch {
+        /* 编辑器不在前台等场景，忽略 */
+    }
+}
+/**
+ * 把当前底图同步进《世界舆图·坐标表》：
+ *   · 书不存在 → createWorldbook 新建；
+ *   · 书存在 → 先验证所有权（全部条目都带 [舆图] 前缀才动它），再逐条 diff，内容没变就跳过写入；
+ *   · 书里有别人的条目 → 拒绝覆盖并报出条目名。
+ */
+async function syncCoordBook(graph, options) {
+    const caps = detectGeoBookCapabilities();
+    if (!caps.canList || !caps.canCreate || !caps.canUpdate) {
+        return { status: 'missing-api', entryCount: 0, message: caps.notes.join('；') };
+    }
+    const { drafts, entries } = buildWorldbookEntries(graph, options);
+    let existing = null;
+    try {
+        existing = (await getWorldbook(WORLDMAP_BOOK));
+    }
+    catch {
+        existing = null;
+    }
+    if (!existing || !existing.length) {
+        const created = await createWorldbook(WORLDMAP_BOOK, entries);
+        if (!created) {
+            return { status: 'failed', entryCount: 0, message: `创建「${WORLDMAP_BOOK}」失败（同名书可能刚被别人建出，刷新后再试）` };
+        }
+        reloadWorldbookEditor();
+        return { status: 'created', entryCount: entries.length, message: `已创建「${WORLDMAP_BOOK}」（${entries.length} 条）` };
+    }
+    const foreign = existing.filter(entry => !String(entry.name ?? '').startsWith(GEO_ENTRY_PREFIX));
+    if (foreign.length) {
+        const names = foreign
+            .slice(0, 3)
+            .map(entry => String(entry.name ?? ''))
+            .join('、');
+        return {
+            status: 'refused',
+            entryCount: existing.length,
+            message: `「${WORLDMAP_BOOK}」里有 ${foreign.length} 条非 [舆图] 条目（${names}…），拒绝覆盖。请换名或先手动清理。`,
+        };
+    }
+    if (!entriesDiffer(existing, drafts)) {
+        return { status: 'unchanged', entryCount: existing.length, message: `内容未变化，跳过写入（${existing.length} 条）` };
+    }
+    await replaceWorldbook(WORLDMAP_BOOK, entries);
+    reloadWorldbookEditor();
+    return { status: 'synced', entryCount: entries.length, message: `已同步 ${entries.length} 条进「${WORLDMAP_BOOK}」` };
+}
+/** 当前挂载状态（设置页状态徽章的数据源） */
+function readCoordMountState() {
+    const caps = detectGeoBookCapabilities();
+    if (!caps.canAttach) {
+        return { mounted: false, isPrimary: false, mountedNames: [], caps };
+    }
+    try {
+        const names = getCharWorldbookNames('current');
+        const all = [names.primary, ...(names.additional ?? [])].filter(Boolean);
+        return {
+            mounted: all.includes(WORLDMAP_BOOK),
+            isPrimary: names.primary === WORLDMAP_BOOK,
+            mountedNames: all,
+            caps,
+        };
+    }
+    catch {
+        return { mounted: false, isPrimary: false, mountedNames: [], caps };
+    }
+}
+/**
+ * 挂载：追加到角色卡 additional（去重、不碰 primary），写完**读回校验（复读）**，
+ * 不一致就抛错 —— 绑定必须确认落地才算成功（对齐小手机的 attach 语义）。
+ */
+async function attachCoordBook() {
+    const current = getCharWorldbookNames('current');
+    const primary = current.primary ?? null;
+    const additional = [...new Set([...(current.additional ?? []), WORLDMAP_BOOK])].filter(name => name && name !== primary);
+    await rebindCharWorldbooks('current', { primary, additional });
+    const back = getCharWorldbookNames('current');
+    const missing = additional.filter(name => !(back.additional ?? []).includes(name));
+    if ((back.primary ?? null) !== primary || missing.length) {
+        throw new Error(`挂载复读失败：${missing.join('、') || '主世界书发生变化'}（请到世界书管理器手动核对）`);
+    }
+}
+/** 卸载：从 additional 移除本名；绝不动主世界书。 */
+async function detachCoordBook() {
+    const current = getCharWorldbookNames('current');
+    const primary = current.primary ?? null;
+    if (primary === WORLDMAP_BOOK) {
+        throw new Error(`「${WORLDMAP_BOOK}」是当前主世界书，不能自动卸载`);
+    }
+    const additional = (current.additional ?? []).filter(name => name !== WORLDMAP_BOOK);
+    await rebindCharWorldbooks('current', { primary, additional });
+    const back = getCharWorldbookNames('current');
+    const lingering = (back.additional ?? []).filter(name => name === WORLDMAP_BOOK);
+    if ((back.primary ?? null) !== primary || lingering.length) {
+        throw new Error('卸载复读失败：绑定没有按预期移除');
+    }
+}
+/** 删除坐标书：先尝试解绑（没挂载/缺接口都继续），再删书。两步确认在 UI 层做。 */
+async function deleteCoordBook() {
+    try {
+        await detachCoordBook();
+    }
+    catch {
+        /* 没挂载或缺绑定接口时直接删书 */
+    }
+    const ok = await deleteWorldbook(WORLDMAP_BOOK);
+    if (!ok)
+        throw new Error(`删除「${WORLDMAP_BOOK}」失败（书可能不存在）`);
+    return `已删除「${WORLDMAP_BOOK}」（绑定已一并解除）`;
+}
+//# sourceMappingURL=geo-book.js.map
+return { selectCoordNodes, keysForNode, buildCoordDrafts, draftToEntry, buildWorldbookEntries, entriesDiffer, toSillyTavernBook, detectGeoBookCapabilities, syncCoordBook, readCoordMountState, attachCoordBook, detachCoordBook, deleteCoordBook };
+});
+__def("./geo-context.js", () => {
+const { tierOf } = __req('./graph.js');
+const { distance } = __req('./trail.js');
+/** 射线法：点是否在多边形内（shape 顶点是世界坐标，首尾不必闭合） */
+function pointInPolygon(point, shape) {
+    if (!Array.isArray(shape) || shape.length < 3)
+        return false;
+    let inside = false;
+    for (let i = 0, j = shape.length - 1; i < shape.length; j = i++) {
+        const [xi, yi] = shape[i];
+        const [xj, yj] = shape[j];
+        const crosses = yi > point[1] !== yj > point[1];
+        if (!crosses)
+            continue;
+        const xAtY = ((xj - xi) * (point[1] - yi)) / (yj - yi) + xi;
+        if (point[0] < xAtY)
+            inside = !inside;
+    }
+    return inside;
+}
+/** 鞋带公式取绝对面积；用于「点在多个大区内时取最小（最具体）的那个」 */
+function polygonArea(shape) {
+    let sum = 0;
+    for (let i = 0, j = shape.length - 1; i < shape.length; j = i++) {
+        sum += shape[j][0] * shape[i][1] - shape[i][0] * shape[j][1];
+    }
+    return Math.abs(sum) / 2;
+}
+/**
+ * 地界归属：优先「点在哪个带 shape 的大区里」（取面积最小的，即最具体的一层）；
+ * 没有命中的 shape，就沿路径向上找最近的 region/realm 祖先；再没有就退到根祖先。
+ */
+function findTerritory(graph, node, xy) {
+    let best = null;
+    let bestArea = Infinity;
+    for (const candidate of graph.toArray()) {
+        if (candidate.kind !== 'region' && candidate.kind !== 'realm')
+            continue;
+        if (!Array.isArray(candidate.shape) || candidate.shape.length < 3)
+            continue;
+        if (!pointInPolygon(xy, candidate.shape))
+            continue;
+        const area = polygonArea(candidate.shape);
+        if (area < bestArea) {
+            bestArea = area;
+            best = candidate;
+        }
+    }
+    if (best && best.id !== node.id)
+        return best;
+    const chain = graph.ancestors(node.id);
+    for (let index = chain.length - 1; index >= 0; index--) {
+        const ancestor = chain[index];
+        if (ancestor.kind === 'region' || ancestor.kind === 'realm')
+            return ancestor;
+    }
+    return chain.length > 1 ? chain[chain.length - 2] : null;
+}
+function fmtCoord(value) {
+    return String(Math.round(value * 10) / 10);
+}
+function fmtDist(value) {
+    return value < 10 ? String(Math.round(value * 10) / 10) : String(Math.round(value));
+}
+/** 汇总「当前位置 + 地界 + 周边 + 规则」；没有可用数据时返回 null（调用方跳过注入） */
+function buildGeoContext(input) {
+    const { graph, points } = input;
+    if (!graph || graph.size === 0 || !points.length)
+        return null;
+    const ordered = [...points]
+        .filter(point => !point.orphan)
+        .sort((a, b) => (a.seq ?? a.messageId) - (b.seq ?? b.messageId));
+    const last = ordered[ordered.length - 1];
+    if (!last)
+        return null;
+    const node = graph.get(last.nodeId) ?? graph.resolve(last.path, { create: false })?.node ?? null;
+    if (!node)
+        return null;
+    const hidden = new Set(input.hiddenIds ?? []);
+    const exclude = new Set([node.id, ...graph.ancestors(node.id).map(item => item.id)]);
+    // ── 周边：按直线距离取最近 N 个（排除自己、祖先链、隐藏、待定位）──
+    const nearby = [];
+    for (const candidate of graph.toArray()) {
+        if (exclude.has(candidate.id) || hidden.has(candidate.id))
+            continue;
+        if (candidate.status !== 'ok')
+            continue;
+        nearby.push({ node: candidate, dist: distance(last.xy, candidate.xy) });
+    }
+    nearby.sort((a, b) => a.dist - b.dist);
+    const picked = nearby.slice(0, Math.max(1, input.nearbyCount));
+    // 保证视野里至少有一个大域/地域级的参照物（不然城内视角全是街道，模型没有方位感）
+    if (!picked.some(item => tierOf(item.node) <= 2)) {
+        const fallback = nearby.find(item => tierOf(item.node) <= 2 && !picked.includes(item));
+        if (fallback)
+            picked.push(fallback);
+    }
+    picked.sort((a, b) => a.dist - b.dist);
+    // ── 位移异常：只看最近的两个活点；超限且不是已认定的 travel 才提示 ──
+    let jump = null;
+    const jumpLimit = input.jumpLimit ?? 150;
+    if (input.jumpNotice && ordered.length >= 2) {
+        const previous = ordered[ordered.length - 2];
+        const gap = distance(previous.xy, last.xy);
+        if (gap > jumpLimit && last.kind !== 'travel' && previous.kind !== 'travel')
+            jump = gap;
+    }
+    const territory = findTerritory(graph, node, last.xy);
+    const altitude = typeof node.altitude === 'number' && node.altitude !== 0 ? `，高度 ${node.altitude} 里` : '';
+    const lines = [];
+    lines.push('[地理态势]（世界舆图 · 本回合生效）');
+    lines.push(`当前位置：${node.path} (${fmtCoord(last.xy[0])},${fmtCoord(last.xy[1])})${altitude}`);
+    if (territory && territory.id !== node.id) {
+        const gap = distance(last.xy, territory.xy);
+        lines.push(`所在地界：${territory.path}${gap > 0.05 ? `（核心距此 ${fmtDist(gap)} 格）` : ''}`);
+    }
+    else {
+        lines.push(`所在地界：${territory ? territory.path : node.path}`);
+    }
+    if (picked.length) {
+        lines.push(`周边：${picked.map(item => `${item.node.name}(${fmtCoord(item.node.xy[0])},${fmtCoord(item.node.xy[1])}) ${fmtDist(item.dist)}`).join('｜')}`);
+        lines.push('（单位：坐标格；1 坐标格 ≈ 15 亿里）');
+    }
+    if (input.enforceBounds) {
+        lines.push('地界规则：非本地势力成员在此公开活动需有明确理由（追捕/战事/受邀/隐匿行踪）；本地遭遇的人物优先来自本地势力与邻近聚落。');
+    }
+    if (jump !== null) {
+        lines.push(`[位移提示] 上一回合至此位移 ${fmtDist(jump)} 格，属远行 —— 请在正文交代耗时/乘骑/传送，或修正坐标。`);
+    }
+    const content = lines.join('\n');
+    return { content, path: node.path, xy: [...last.xy], territory, nearby: picked, jump };
+}
+//# sourceMappingURL=geo-context.js.map
+return { pointInPolygon, findTerritory, buildGeoContext };
 });
 __def("./ui/theme.js", () => {
 const STYLE_ID = 'worldmap-style';
 const CSS = `
 .worldmap-root, .worldmap-root * { box-sizing: border-box; }
 .worldmap-root {
+  /* ── 设计令牌（深色暖炭壳 × 米黄亚麻强调）───────────────────────── */
+  --dym-bg: #16130f;              /* 窗框/标题栏/导航轨/时间轴 */
+  --dym-panel: #1f1c17;           /* 抽屉面板 */
+  --dym-card: #2a2520;            /* 卡片 */
+  --dym-field: #1d1a15;           /* 输入类控件底（比卡片深的"凹陷井"） */
+  --dym-hover: rgba(255,255,255,.05);
+  --dym-line: rgba(255,255,255,.08);
+  --dym-line-strong: rgba(255,255,255,.14);
+  --dym-text: #ece7db;
+  --dym-muted: #a89f8e;
+  --dym-faint: #7d7666;
+  --dym-accent: #d9c08c;          /* 亚麻米金 */
+  --dym-accent-strong: #ecd9ab;
+  --dym-accent-deep: #b99e66;
+  --dym-accent-dim: rgba(217,192,140,.13);
+  --dym-danger: #e2725f;
+  --dym-radius: 12px;
+  --dym-font: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+    "HarmonyOS Sans SC", "MiSans", system-ui, -apple-system, sans-serif;
   position: fixed; z-index: 2147483000; display: flex; flex-direction: column;
   min-width: 340px; min-height: 240px;
-  font-family: "Songti SC", "STSong", "SimSun", "Noto Serif CJK SC", Georgia, serif;
-  font-size: 13px; line-height: 1.6;
-  color: #241d13;
-  background:
-    radial-gradient(135% 105% at 16% -4%, #fdf6e2 0%, #f6ead0 38%, #ecdcb8 68%, #ddc79c 100%);
-  border: 1px solid rgba(104,80,44,.62);
-  border-radius: 12px;
-  box-shadow: 0 20px 56px rgba(0,0,0,.48), 0 2px 0 rgba(255,255,255,.28) inset, 0 0 80px rgba(150,120,70,.2) inset;
+  font-family: var(--dym-font);
+  font-size: 13px; line-height: 1.65;
+  color: var(--dym-text);
+  background: var(--dym-panel);
+  border: 1px solid rgba(222, 200, 156, .38);   /* 浅色描边：在深色酒馆页面上勾出窗缘 */
+  border-radius: var(--dym-radius);
+  box-shadow: 0 24px 64px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.35);
   overflow: hidden;
   transition: width .22s ease, box-shadow .22s ease;
-}
-.worldmap-root::before {
-  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 0;
-  background-image:
-    repeating-linear-gradient(0deg, rgba(124,96,54,.055) 0 1px, transparent 1px 3px),
-    repeating-linear-gradient(90deg, rgba(124,96,54,.042) 0 1px, transparent 1px 4px),
-    radial-gradient(120% 90% at 50% 50%, transparent 55%, rgba(120,92,50,.13) 100%);
 }
 .worldmap-root > * { position: relative; z-index: 1; }
 .worldmap-root.dym-collapsed { min-height: 0; height: auto !important; }
 .worldmap-root.dym-collapsed .dym-body,
 .worldmap-root.dym-collapsed .dym-timeline { display: none; }
 
-/* ── 贴边窄条：做成"索引标贴"那种小书签，贴在页面边缘 ───────────────── */
+/* ── 贴边窄条：暖炭底小书签，贴在页面边缘 ─────────────────────────── */
 .worldmap-root.dym-rail {
   width: 30px !important; min-width: 30px; min-height: 0;
-  border-radius: 8px 0 0 8px;
+  border-radius: 10px 0 0 10px;
   border-right: none;
-  background: linear-gradient(180deg, #cf9350 0%, #b0702f 55%, #96581f 100%);
-  box-shadow: -4px 6px 16px rgba(0,0,0,.38), 0 1px 0 rgba(255,255,255,.25) inset;
+  background: linear-gradient(180deg, #37302a 0%, #2a251f 55%, #221e19 100%);
+  border-left: 1px solid rgba(217,192,140,.28);
+  box-shadow: -6px 8px 20px rgba(0,0,0,.45);
   transition: width .2s ease;
 }
-.worldmap-root.dym-rail.dym-rail-left { border-radius: 0 8px 8px 0; border-right: 1px solid rgba(104,80,44,.62); border-left: none; box-shadow: 4px 6px 16px rgba(0,0,0,.38), 0 1px 0 rgba(255,255,255,.25) inset; }
-.worldmap-root.dym-rail::before { display: none; }
+.worldmap-root.dym-rail.dym-rail-left {
+  border-radius: 0 10px 10px 0;
+  border-right: 1px solid rgba(217,192,140,.28);
+  border-left: none;
+  box-shadow: 6px 8px 20px rgba(0,0,0,.45);
+}
 .worldmap-root.dym-rail .dym-body,
 .worldmap-root.dym-rail .dym-timeline,
 .worldmap-root.dym-rail .dym-resize { display: none !important; }
 .worldmap-root.dym-rail .dym-titlebar {
-  flex-direction: column; height: 100%; padding: 9px 0; gap: 7px;
+  flex-direction: column; height: 100%; padding: 10px 0; gap: 8px;
   background: transparent; box-shadow: none; cursor: pointer;
 }
 .worldmap-root.dym-rail .dym-title {
-  writing-mode: vertical-rl; font-size: 12.5px; letter-spacing: .3em; color: #fff8e8;
-  text-shadow: 0 1px 2px rgba(0,0,0,.35);
+  writing-mode: vertical-rl; font-size: 12px; letter-spacing: .3em; color: var(--dym-accent-strong);
 }
 .worldmap-root.dym-rail .dym-badge,
 .worldmap-root.dym-rail .dym-spacer,
@@ -1975,23 +2951,23 @@ const CSS = `
 .dym-rail-hint { display: none; }
 .worldmap-root.dym-rail .dym-rail-hint {
   display: block; writing-mode: vertical-rl; font-size: 9.5px; letter-spacing: .18em;
-  color: rgba(255,248,232,.78);
+  color: rgba(236,217,171,.55);
 }
 
-/* ── 区域轮廓：界域/地域用虚线多边形围出范围 ─────────────────────────── */
+/* ── 区域轮廓：界域/地域用虚线多边形围出范围（宣纸上的墨线，保持原画法）── */
 .dym-region {
-  stroke-dasharray: 7 5;
+  stroke-dasharray: 6 4.5;
   stroke-linejoin: round;
   stroke-linecap: round;
-  stroke-width: 1.4;
-  stroke: rgba(120, 100, 60, .6);
+  stroke-width: 1.3;
+  stroke: rgba(120, 100, 60, .55);
   fill: rgba(120, 100, 60, .04);
   pointer-events: none;
 }
 .dym-region-realm {
-  stroke: rgba(146, 104, 42, .78);
+  stroke: rgba(146, 104, 42, .72);
   fill: rgba(146, 104, 42, .05);
-  stroke-width: 1.9;
+  stroke-width: 1.7;
 }
 .dym-region-region {
   stroke: rgba(111, 125, 69, .72);
@@ -1999,234 +2975,358 @@ const CSS = `
   stroke-width: 1.3;
 }
 
-/* ── 标题栏 ─────────────────────────────────────────────────────────── */
+/* ── 标题栏：扁平深色，细发丝线分隔 ─────────────────────────────────── */
 .dym-titlebar {
-  display: flex; align-items: center; gap: 9px; padding: 8px 11px; flex: 0 0 auto;
-  background: linear-gradient(180deg, #6d4a24 0%, #55381b 60%, #452c14 100%);
-  color: #f6ead0; cursor: move; user-select: none;
-  box-shadow: 0 1px 0 rgba(255,255,255,.14) inset, 0 2px 6px rgba(0,0,0,.28);
+  display: flex; align-items: center; gap: 9px; padding: 0 8px 0 14px; height: 44px; flex: 0 0 auto;
+  background: var(--dym-bg); color: var(--dym-text); cursor: move; user-select: none;
+  border-bottom: 1px solid var(--dym-line);
 }
-.dym-title { font-size: 15.5px; letter-spacing: .18em; font-weight: 700; text-shadow: 0 1px 0 rgba(0,0,0,.45); }
+.dym-title {
+  font-size: 13.5px; font-weight: 700; letter-spacing: .18em; color: var(--dym-text);
+  /* 产品名用衬线：与无衬线 UI 拉开品牌感，呼应宣纸画布 */
+  font-family: "Songti SC", "STSong", "SimSun", serif;
+}
+.dym-logo { display: flex; color: var(--dym-accent); opacity: .95; }
 .dym-badge {
-  font-size: 12px; padding: 1px 9px; border-radius: 10px; max-width: 48%;
+  font-size: 11.5px; padding: 2px 10px; border-radius: 999px; max-width: 48%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  background: rgba(246,234,208,.16); border: 1px solid rgba(246,234,208,.34);
+  background: var(--dym-accent-dim); border: 1px solid rgba(217,192,140,.26); color: var(--dym-accent-strong);
 }
 .dym-spacer { flex: 1 1 auto; }
-.dym-actions { display: flex; gap: 5px; }
+.dym-actions { display: flex; gap: 2px; }
 .dym-actions button {
-  width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
-  border: 1px solid rgba(246,234,208,.38); background: rgba(246,234,208,.14); color: #f6ead0;
-  border-radius: 7px; cursor: pointer; font-size: 14px; line-height: 1; font-family: inherit;
+  width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: #b6afa0;
+  border-radius: 8px; cursor: pointer; line-height: 1; font-family: inherit; padding: 0;
+  transition: background .14s ease, color .14s ease;
 }
-.dym-actions button:hover { background: rgba(246,234,208,.3); }
+.dym-actions button:hover { background: rgba(255,255,255,.07); color: var(--dym-text); }
+.dym-actions button:active { background: rgba(255,255,255,.11); }
+.dym-actions button.dym-on { background: var(--dym-accent-dim); color: var(--dym-accent-strong); }
+/* 关闭按钮悬停红：主流窗口的惯例 */
+.dym-actions button[data-act="close"]:hover { background: #d9483f; color: #fff; }
 
-/* ── 通用按钮：侧栏是浅底，必须用深色字，否则会"看不见但能点" ────────── */
+/* ── 通用按钮：深色升起面 + 亚麻主按钮 ─────────────────────────────── */
 .dym-btn {
-  border: 1px solid rgba(110,84,46,.45);
-  background: linear-gradient(180deg, rgba(255,252,244,.92), rgba(244,232,208,.78));
-  color: #4a3418; border-radius: 7px; cursor: pointer; font-size: 12.5px; padding: 4px 10px;
-  line-height: 1.5; font-family: inherit; box-shadow: 0 1px 2px rgba(120,92,50,.16);
+  border: 1px solid var(--dym-line-strong);
+  background: #2e2a24; color: var(--dym-text);
+  border-radius: 8px; cursor: pointer; font-size: 12.5px; padding: 5px 12px;
+  line-height: 1.55; font-family: inherit;
+  transition: background .14s ease, border-color .14s ease, box-shadow .14s ease, transform .06s ease;
 }
-.dym-btn:hover { background: linear-gradient(180deg, #fffdf7, #f0e2c2); border-color: rgba(110,84,46,.72); }
-.dym-btn:active { transform: translateY(1px); }
-.dym-btn:disabled { opacity: .42; cursor: not-allowed; box-shadow: none; }
+.dym-btn:hover { background: #383329; border-color: rgba(255,255,255,.2); }
+.dym-btn:active { transform: translateY(.5px); }
+.dym-btn:disabled { opacity: .38; cursor: not-allowed; box-shadow: none; background: #282520; }
 .dym-btn.dym-primary {
-  background: linear-gradient(180deg, #b8542f, #94401f); border-color: #7d3316; color: #fdf3e2;
-  text-shadow: 0 1px 0 rgba(0,0,0,.25);
+  background: linear-gradient(180deg, #e6d1a2, #d2b678); border-color: #c3a76c; color: #2c2113;
+  font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.3), 0 1px 0 rgba(255,255,255,.18) inset;
 }
-.dym-btn.dym-primary:hover { background: linear-gradient(180deg, #c65c34, #a04722); }
-.dym-btn.dym-danger { color: #96331a; border-color: rgba(150,51,26,.45); background: linear-gradient(180deg, #fff8f2, #f4e0d2); }
-.dym-btn.dym-danger:hover { background: linear-gradient(180deg, #fff, #f0d3c0); border-color: rgba(150,51,26,.7); }
-.dym-btn.dym-danger[data-armed="1"] { background: linear-gradient(180deg, #b8542f, #94401f); border-color: #7d3316; color: #fdf3e2; }
-.dym-titlebar .dym-btn { border-color: rgba(246,234,208,.38); background: rgba(246,234,208,.14); color: #f6ead0; }
-.dym-titlebar .dym-btn:hover { background: rgba(246,234,208,.3); }
-.dym-actions button.dym-on { background: rgba(246,234,208,.34); color: #fff8e8; }
+.dym-btn.dym-primary:hover { background: linear-gradient(180deg, #eeddb4, #dcc287); border-color: #cfae70; }
+.dym-btn.dym-danger { color: #ef8d7c; border-color: rgba(226,114,95,.34); background: rgba(226,114,95,.07); }
+.dym-btn.dym-danger:hover { background: rgba(226,114,95,.14); border-color: rgba(226,114,95,.55); }
+.dym-btn.dym-danger[data-armed="1"] { background: #c05544; border-color: #d4685a; color: #fff; }
 
 .dym-body { display: flex; flex: 1 1 auto; min-height: 0; }
-.dym-canvas-wrap { position: relative; flex: 1 1 auto; min-width: 120px; overflow: hidden; }
+/* 画布区：宣纸底保留在这里（深色外壳中间嵌一张古地图） */
+.dym-canvas-wrap {
+  position: relative; flex: 1 1 auto; min-width: 120px; overflow: hidden;
+  background:
+    radial-gradient(135% 105% at 16% -4%, #fdf6e2 0%, #f6ead0 38%, #ecdcb8 68%, #ddc79c 100%);
+}
+.dym-canvas-wrap::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(124,96,54,.055) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgba(124,96,54,.042) 0 1px, transparent 1px 4px),
+    radial-gradient(120% 90% at 50% 50%, transparent 55%, rgba(120,92,50,.13) 100%);
+}
+.dym-canvas-wrap > * { position: relative; z-index: 1; }
+/* 顶部中间的坐标条：当前选中点的名称 + 坐标（没选中时由脚本隐藏）。
+   它浮在宣纸画布上，保持浅色羊皮纸小票风格。 */
+.dym-hud {
+  position: absolute; left: 50%; top: 8px; transform: translateX(-50%);
+  max-width: 72%; padding: 3px 12px; border-radius: 999px; z-index: 3;
+  background: rgba(255,252,244,.94);
+  border: 1px solid rgba(110,84,46,.32);
+  box-shadow: 0 2px 8px rgba(90,66,30,.22);
+  font-size: 12.5px; letter-spacing: .02em; color: #3a2c16;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none;
+}
 .dym-svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
 .dym-svg.dym-panning { cursor: grabbing; }
 .dym-svg.dym-editing { cursor: crosshair; }
 
 .dym-breadcrumb {
   position: absolute; left: 9px; top: 9px; display: flex; flex-wrap: wrap; gap: 2px; align-items: center;
-  font-size: 12px; background: rgba(255,251,238,.9); border: 1px solid rgba(122,96,58,.4);
-  border-radius: 8px; padding: 3px 8px; max-width: calc(100% - 18px);
-  box-shadow: 0 1px 4px rgba(120,92,50,.14);
+  font-size: 12px; background: rgba(255,251,238,.92); border: 1px solid rgba(122,96,58,.3);
+  border-radius: 999px; padding: 3px 10px; max-width: calc(100% - 18px);
+  box-shadow: 0 1px 5px rgba(90,66,30,.18); color: #4a3c26;
 }
 .dym-breadcrumb span { cursor: pointer; color: #7a5321; }
 .dym-breadcrumb span:hover { color: #a3462a; text-decoration: underline; }
 .dym-breadcrumb i { color: #b09772; font-style: normal; margin: 0 1px; }
 .dym-breadcrumb b { color: #3a2c17; }
 
-.dym-zoomctl { position: absolute; right: 9px; bottom: 9px; display: flex; flex-direction: column; gap: 4px; }
+.dym-zoomctl { position: absolute; right: 9px; bottom: 9px; display: flex; flex-direction: column; gap: 5px; }
 .dym-zoomctl button {
-  width: 26px; height: 26px; border-radius: 8px; cursor: pointer; font-size: 15px; line-height: 1;
-  background: rgba(255,251,238,.94); border: 1px solid rgba(122,96,58,.45); color: #4a3418;
-  box-shadow: 0 1px 3px rgba(120,92,50,.2);
+  width: 28px; height: 28px; border-radius: 9px; cursor: pointer; line-height: 1;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+  background: rgba(255,251,238,.94); border: 1px solid rgba(122,96,58,.35); color: #4a3418;
+  box-shadow: 0 1px 4px rgba(90,66,30,.22);
+  transition: background .14s ease;
 }
-.dym-zoomctl button:hover { background: #fff; }
+.dym-zoomctl button:hover { background: #fffdf6; }
 
 .dym-legend {
-  position: absolute; left: 9px; bottom: 9px; font-size: 11px; color: #6a5433;
-  background: rgba(255,251,238,.88); border: 1px solid rgba(122,96,58,.32); border-radius: 8px;
-  padding: 3px 7px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; max-width: 46%;
+  position: absolute; left: 9px; bottom: 9px; font-size: 11px; color: #5c4a2c;
+  background: rgba(255,251,238,.9); border: 1px solid rgba(122,96,58,.26); border-radius: 10px;
+  padding: 4px 9px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; max-width: 46%;
 }
 .dym-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 3px; vertical-align: -1px; }
 .dym-status {
-  position: absolute; right: 9px; top: 9px; font-size: 11.5px; color: #6a5433;
-  background: rgba(255,251,238,.88); border: 1px solid rgba(122,96,58,.32); border-radius: 8px; padding: 3px 8px;
+  position: absolute; right: 9px; top: 9px; font-size: 11.5px; color: #5c4a2c;
+  background: rgba(255,251,238,.9); border: 1px solid rgba(122,96,58,.26); border-radius: 999px; padding: 3px 10px;
   max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* ── 侧栏（信息面板）─────────────────────────────────────────────────── */
+/* ── 抽屉（右栏）：导航轨 + 内容面板 ────────────────────────────────── */
 /* 用比例而不是固定像素：设置页控件多，固定 250px 会被挤成一团；
-   min-width:0 是关键 —— 否则侧栏会被内容的 min-content 宽度顶大（曾经被 textarea 顶到 431px）。 */
+   min-width:0 是关键 —— 否则侧栏会被内容的 min-content 宽度顶大。 */
 .dym-drawer {
   flex: 0 0 46%; min-width: 0; max-width: 520px;
-  display: flex; flex-direction: column; min-height: 0;
-  border-left: 1px solid rgba(122,96,58,.32); background: rgba(253,248,235,.5);
+  display: flex; flex-direction: row; min-height: 0;
+  border-left: 1px solid var(--dym-line); background: var(--dym-panel);
 }
 .worldmap-root.dym-narrow .dym-drawer { flex-basis: 232px; }
 
-/* 收起右侧栏：画布占满，把手留在右沿 */
+/* 收起右栏：画布占满，把手留在右沿 */
 .worldmap-root.dym-drawer-off .dym-drawer { display: none; }
 .dym-drawer-toggle {
-  flex: 0 0 14px; width: 14px; padding: 0; cursor: pointer; font-family: inherit;
+  flex: 0 0 15px; width: 15px; padding: 0; cursor: pointer; font-family: inherit;
   display: flex; align-items: center; justify-content: center;
-  font-size: 15px; font-weight: 700; line-height: 1; color: #6b4f28;
-  border: none; border-left: 1px solid rgba(122,96,58,.34);
-  background: linear-gradient(90deg, rgba(240,228,203,.65), rgba(232,217,187,.98));
-  box-shadow: inset 1px 0 0 rgba(255,255,255,.5);
+  color: #857e6f; border: none; background: var(--dym-bg);
+  border-left: 1px solid var(--dym-line);
+  transition: color .14s ease, background .14s ease;
 }
-.dym-drawer-toggle:hover { color: #9c3a1e; background: linear-gradient(90deg, rgba(246,214,190,.9), rgba(240,200,170,.98)); }
-.dym-drawer-toggle:active { transform: translateX(1px); }
-.worldmap-root.dym-drawer-off .dym-drawer-toggle { border-left-color: rgba(122,96,58,.45); }
+.dym-drawer-toggle:hover { color: var(--dym-accent-strong); background: #24211c; }
+.worldmap-root.dym-drawer-off .dym-drawer-toggle { border-left-color: var(--dym-line-strong); }
 .worldmap-root.dym-rail .dym-drawer-toggle { display: none; }
-.dym-tabs { display: flex; border-bottom: 1px solid rgba(122,96,58,.3); flex: 0 0 auto; background: rgba(246,236,214,.6); }
-.dym-tabs button {
-  flex: 1 1 auto; padding: 7px 2px 6px; font-size: 13px; cursor: pointer; font-family: inherit;
-  background: transparent; border: none; border-bottom: 2.5px solid transparent; color: #7a6242;
+
+/* 导航轨：QQ/ZCode 设置页那种左侧竖排导航（图标 + 小字） */
+.dym-tabs {
+  display: flex; flex-direction: column; gap: 3px; padding: 8px 6px; flex: 0 0 52px;
+  background: var(--dym-bg); border-right: 1px solid var(--dym-line);
 }
-.dym-tabs button:hover { color: #4a3418; }
-.dym-tabs button.dym-active { color: #9c3a1e; border-bottom-color: #b8542f; font-weight: 700; background: rgba(255,253,246,.7); }
-.dym-panes { flex: 1 1 auto; min-width: 0; overflow: auto; padding: 10px; font-size: 13px; }
-.dym-panes::-webkit-scrollbar { width: 9px; }
-.dym-panes::-webkit-scrollbar-thumb { background: rgba(122,96,58,.34); border-radius: 6px; }
+.dym-tabs button {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 7px 0 5px; cursor: pointer; font-family: inherit;
+  background: transparent; border: none; border-radius: 9px; color: #998f7c;
+  font-size: 10.5px; letter-spacing: .02em; line-height: 1;
+  transition: background .14s ease, color .14s ease;
+}
+.dym-tabs button:hover { color: var(--dym-text); background: var(--dym-hover); }
+.dym-tabs button.dym-active {
+  color: var(--dym-accent-strong); background: var(--dym-accent-dim); font-weight: 600;
+}
+/* 窄窗：导航轨只留图标，省出内容宽度 */
+.worldmap-root.dym-narrow .dym-tabs { flex-basis: 44px; padding: 8px 4px; }
+.worldmap-root.dym-narrow .dym-tabs button span { display: none; }
+.worldmap-root.dym-narrow .dym-tabs button { padding: 9px 0; }
+.dym-panes { flex: 1 1 auto; min-width: 0; overflow: auto; padding: 12px; font-size: 13px; color: var(--dym-text); }
+.dym-panes::-webkit-scrollbar { width: 10px; }
+.dym-panes::-webkit-scrollbar-thumb { background: rgba(255,255,255,.13); border-radius: 6px; border: 3px solid transparent; background-clip: padding-box; }
+.dym-panes::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.24); border: 3px solid transparent; background-clip: padding-box; }
+.dym-panes::-webkit-scrollbar-track { background: transparent; }
 .dym-pane { display: none; }
 .dym-pane.dym-active { display: block; }
 
-.dym-field { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
-.dym-field label { flex: 0 0 58px; color: #7a6242; font-size: 12.5px; }
-.dym-field input[type=text], .dym-field input[type=number], .dym-field select {
-  flex: 1 1 auto; min-width: 0; font-family: inherit; font-size: 12.5px; padding: 4px 7px;
-  border: 1px solid rgba(122,96,58,.4); border-radius: 6px; background: rgba(255,253,247,.95); color: #2b2114;
+/* ── 表单 ──────────────────────────────────────────────────────────── */
+.dym-field { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+.dym-field label { flex: 0 0 62px; color: var(--dym-muted); font-size: 12.5px; }
+.dym-field input[type=text], .dym-field input[type=number], .dym-field input[type=password], .dym-field select, .dym-field textarea {
+  flex: 1 1 auto; min-width: 0; font-family: inherit; font-size: 12.5px; padding: 5px 9px;
+  border: 1px solid var(--dym-line-strong); border-radius: 8px; background: var(--dym-field); color: var(--dym-text);
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
 }
-.dym-field input:focus, .dym-field select:focus { outline: 2px solid rgba(184,84,47,.35); }
-.dym-row { display: flex; gap: 6px; margin-bottom: 7px; flex-wrap: wrap; }
+.dym-field input::placeholder, .dym-field textarea::placeholder { color: var(--dym-faint); }
+.dym-field select { cursor: pointer; }
+.dym-field select option { background: #1d1a15; color: var(--dym-text); }
+.dym-field input:hover, .dym-field select:hover { border-color: rgba(255,255,255,.22); }
+.dym-field input:focus, .dym-field select:focus, .dym-field textarea:focus {
+  outline: none; border-color: var(--dym-accent-deep); box-shadow: 0 0 0 3px rgba(217,192,140,.16);
+}
+.dym-field textarea { font-family: inherit; line-height: 1.6; resize: vertical; }
+/* 纵排字段：标签在上、控件通栏（长标签/大文本框用） */
+.dym-field.dym-col { flex-direction: column; align-items: stretch; gap: 5px; }
+.dym-field.dym-col label { flex: none; width: auto; }
+.dym-row { display: flex; gap: 6px; margin-bottom: 9px; flex-wrap: wrap; }
 .dym-hint {
-  font-size: 12px; color: #7d6a4a; line-height: 1.75; margin: 5px 0 9px;
-  background: rgba(255,252,244,.6); border-left: 2px solid rgba(184,84,47,.4); border-radius: 0 6px 6px 0; padding: 5px 8px;
+  font-size: 11.8px; color: var(--dym-muted); line-height: 1.7; margin: 7px 0 10px;
+  background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.045);
+  border-radius: 10px; padding: 8px 11px;
 }
-.dym-sect { font-size: 12px; color: #8a6f45; letter-spacing: .1em; margin: 12px 0 6px; }
+.dym-hint b { color: var(--dym-text); font-weight: 600; }
+.dym-hint code {
+  font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 11px;
+  background: rgba(255,255,255,.07); border-radius: 4px; padding: 1px 5px; color: var(--dym-accent-strong);
+}
+.dym-sect { font-size: 11.5px; color: var(--dym-faint); letter-spacing: .08em; margin: 14px 0 6px; }
 
-/* 设置页：分块折叠，别把一堆输入框挤在一屏 */
+/* 设置页：分块折叠，一叠深色卡片 */
 .dym-sec {
-  border: 1px solid rgba(122,96,58,.32); border-radius: 9px; margin: 0 0 9px;
-  background: linear-gradient(180deg, rgba(255,253,247,.82), rgba(248,240,224,.7));
+  border: 1px solid var(--dym-line); border-radius: var(--dym-radius); margin: 0 0 10px;
+  background: var(--dym-card);
   overflow: hidden;
 }
 .dym-sec > summary {
-  cursor: pointer; padding: 8px 10px; font-size: 13px; font-weight: 700; color: #6b4f28;
-  list-style: none; display: flex; align-items: center; gap: 6px; letter-spacing: .04em;
+  cursor: pointer; padding: 11px 13px; font-size: 13px; font-weight: 600; color: var(--dym-text);
+  list-style: none; display: flex; align-items: center; gap: 8px; letter-spacing: .01em;
+  transition: background .14s ease;
 }
 .dym-sec > summary::-webkit-details-marker { display: none; }
 .dym-sec > summary::before {
-  content: ''; width: 0; height: 0; flex: 0 0 auto;
-  border-left: 5px solid #a3462a; border-top: 4px solid transparent; border-bottom: 4px solid transparent;
-  transition: transform .16s ease;
+  content: ''; width: 5px; height: 5px; flex: 0 0 auto; border-radius: 1px;
+  border-right: 1.6px solid #8d8574; border-bottom: 1.6px solid #8d8574;
+  transform: rotate(-45deg); transition: transform .16s ease; margin-top: -2px;
 }
-.dym-sec[open] > summary::before { transform: rotate(90deg) translateX(1px); }
-.dym-sec > summary:hover { background: rgba(163,70,42,.08); }
-.dym-sec[open] > summary { border-bottom: 1px solid rgba(122,96,58,.24); }
-.dym-sec > *:not(summary) { margin-left: 10px; margin-right: 10px; }
-.dym-sec > *:not(summary):first-of-type { margin-top: 9px; }
-.dym-sec > *:not(summary):last-child { margin-bottom: 9px; }
+.dym-sec[open] > summary::before { transform: rotate(45deg); margin-top: 2px; }
+.dym-sec > summary:hover { background: rgba(255,255,255,.028); }
+.dym-sec[open] > summary { border-bottom: 1px solid var(--dym-line); }
+.dym-sec > *:not(summary) { margin-left: 13px; margin-right: 13px; }
+.dym-sec > *:not(summary):first-of-type { margin-top: 12px; }
+.dym-sec > *:not(summary):last-child { margin-bottom: 12px; }
 .dym-sec .dym-field label { flex: 0 0 66px; }
+.dym-sec .dym-field.dym-col label { flex: none; width: auto; }
 .dym-pw { position: relative; flex: 1 1 auto; display: flex; align-items: center; min-width: 0; }
 .dym-pw input { flex: 1 1 auto; min-width: 0; }
 .dym-pw button {
-  flex: 0 0 auto; margin-left: 4px; width: 28px; height: 26px; padding: 0; cursor: pointer;
-  border: 1px solid rgba(122,96,58,.4); border-radius: 6px; background: rgba(255,253,247,.95); color: #6b4f28;
+  flex: 0 0 auto; margin-left: 6px; width: 30px; height: 29px; padding: 0; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--dym-line-strong); border-radius: 8px; background: var(--dym-field); color: #9d9585;
+  transition: color .14s ease, border-color .14s ease;
 }
-.dym-pw button:hover { background: #fff; color: #a3462a; }
-.dym-field .dym-tip { flex: 0 0 auto; font-size: 11px; color: #9a8158; cursor: help; border-bottom: 1px dotted rgba(122,96,58,.6); }
+.dym-pw button:hover { color: var(--dym-accent-strong); border-color: rgba(255,255,255,.22); }
+.dym-field .dym-tip { flex: 0 0 auto; font-size: 11px; color: var(--dym-faint); cursor: help; border-bottom: 1px dotted rgba(255,255,255,.3); }
 .dym-report {
-  margin: 8px 0 0; padding: 7px 9px; border-radius: 7px; max-height: 168px; overflow: auto;
+  margin: 8px 0 0; padding: 9px 11px; border-radius: 10px; max-height: 168px; overflow: auto;
   font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 11.5px; line-height: 1.6;
-  background: rgba(43,33,20,.06); border: 1px dashed rgba(122,96,58,.45); color: #4a3418; white-space: pre-wrap;
+  background: #181510; border: 1px solid var(--dym-line); color: #d5cec0; white-space: pre-wrap;
 }
 .dym-report:empty { display: none; }
-.dym-list { list-style: none; margin: 0; padding: 0; }
-.dym-list li {
-  padding: 4px 6px; border-radius: 6px; cursor: pointer; display: flex; gap: 6px; align-items: baseline; font-size: 13px;
+/* 轻操作的就地结果条：贴在触发按钮下面，不滚动页面、不抢视线 */
+.dym-api-result {
+  margin: 2px 0 8px; padding: 7px 10px; border-radius: 10px; max-height: 150px; overflow: auto;
+  font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 11.5px; line-height: 1.6;
+  background: var(--dym-field); border: 1px solid var(--dym-line); color: #d5cec0; white-space: pre-wrap;
 }
-.dym-list li:hover { background: rgba(163,70,42,.1); }
-.dym-list li.dym-selected { background: rgba(163,70,42,.2); }
-.dym-list .dym-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; transform: translateY(-1px); }
+/* 分组卡片：设置页折叠块之外，普通控件分组也用它（编辑页等） */
+.dym-card {
+  background: var(--dym-card); border: 1px solid var(--dym-line); border-radius: var(--dym-radius);
+  padding: 11px 13px; margin-bottom: 10px;
+}
+.dym-card .dym-sect { margin: 0 0 8px; }
+.dym-list {
+  list-style: none; margin: 0 0 10px; padding: 5px;
+  background: var(--dym-card); border: 1px solid var(--dym-line); border-radius: var(--dym-radius);
+}
+.dym-list li {
+  padding: 6px 9px; border-radius: 8px; cursor: pointer; display: flex; gap: 8px; align-items: baseline; font-size: 13px;
+  transition: background .13s ease;
+}
+.dym-list li:hover { background: var(--dym-hover); }
+.dym-list li.dym-selected { background: var(--dym-accent-dim); }
+.dym-list .dym-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; transform: translateY(-1px); box-shadow: 0 0 0 1px rgba(255,255,255,.12); }
 .dym-list .dym-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dym-list .dym-tag { font-size: 11px; color: #9a8158; flex: 0 0 auto; }
-.dym-list .dym-unplaced { color: #a3462a; font-style: italic; }
-.dym-list .dym-orphan { color: #6b7a45; }
-.dym-switches { display: grid; grid-template-columns: 1fr; gap: 5px; margin-bottom: 10px; }
-.dym-switches label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #4a3418; cursor: pointer; }
-.dym-switches input { accent-color: #b8542f; width: 14px; height: 14px; }
+.dym-list .dym-tag { font-size: 11px; color: var(--dym-faint); flex: 0 0 auto; }
+.dym-list .dym-unplaced { color: var(--dym-accent); font-style: italic; }
+.dym-list .dym-orphan { color: #a9b56d; }
+
+/* ── 开关：iOS / 微信那种滑块 ────────────────────────────────────────
+   胶囊画在 .dym-track（span）上、原生 checkbox 只当状态机隐藏掉：
+   有些酒馆主题会给 input[type=checkbox] 配自己的开关样式，直接画在
+   input 上会和宿主的叠出一个「黑影」，所以外观必须长在宿主碰不到的元素上。 */
+.dym-switches {
+  display: flex; flex-direction: column; margin-bottom: 10px;
+  border: 1px solid var(--dym-line); border-radius: var(--dym-radius); background: var(--dym-card); overflow: hidden;
+}
+.dym-switches label {
+  display: flex; flex-direction: row; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 9px 13px; font-size: 12.8px; color: var(--dym-text); cursor: pointer;
+  border-top: 1px solid var(--dym-line); line-height: 1.55;
+  transition: background .13s ease;
+}
+.dym-switches label:first-child { border-top: none; }
+.dym-switches label:hover { background: rgba(255,255,255,.022); }
+.dym-switches b { font-weight: 600; }
+.dym-switches input[type=checkbox] {
+  position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none;
+}
+.dym-switches .dym-track {
+  position: relative; flex: 0 0 auto; width: 40px; height: 23px; border-radius: 12px;
+  background: #45403a; transition: background .2s ease;
+}
+.dym-switches .dym-track::after {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 19px; height: 19px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.4);
+  transition: transform .2s cubic-bezier(.2,.8,.3,1);
+}
+.dym-switches label:hover .dym-track::after { box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+.dym-switches input:checked ~ .dym-track { background: var(--dym-accent); }
+.dym-switches input:checked ~ .dym-track::after { transform: translateX(17px); }
+.dym-switches input:focus-visible ~ .dym-track { outline: 2px solid rgba(217,192,140,.4); outline-offset: 2px; }
+/* 已经躺在卡片里时不要再套一层盒子，用发丝线分隔即可 */
+.dym-sec .dym-switches { border: none; border-radius: 0; background: transparent; }
+.dym-sec .dym-switches label { padding-left: 0; padding-right: 0; }
 
 /* 导出/导入用的文本框：让用户能直接复制去发给 AI，也能把改好的粘回来 */
 .dym-io {
   width: 100%; min-height: 132px; resize: vertical; margin: 2px 0 6px;
   font-family: ui-monospace, Consolas, "Courier New", monospace; font-size: 11.5px; line-height: 1.55;
-  padding: 6px 8px; border: 1px solid rgba(122,96,58,.42); border-radius: 7px;
-  background: rgba(255,253,247,.96); color: #2b2114; white-space: pre; overflow: auto;
+  padding: 8px 10px; border: 1px solid var(--dym-line-strong); border-radius: 10px;
+  background: #181510; color: #d5cec0; white-space: pre; overflow: auto;
 }
-.dym-io:focus { outline: 2px solid rgba(184,84,47,.35); }
+.dym-io:focus { outline: none; border-color: var(--dym-accent-deep); box-shadow: 0 0 0 3px rgba(217,192,140,.16); }
+
+/* 状态小药丸（坐标世界书挂载状态、列表右侧的分类标注） */
+.dym-tag {
+  display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; padding: 2px 9px; border-radius: 999px;
+  background: rgba(255,255,255,.07); border: none; color: #bdb4a2;
+}
 
 .dym-timeline {
-  flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 7px 11px;
-  border-top: 1px solid rgba(122,96,58,.3); background: rgba(246,236,214,.72);
-  font-size: 12.5px; color: #5a4526;
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+  border-top: 1px solid var(--dym-line); background: var(--dym-bg);
+  font-size: 12px; color: var(--dym-muted);
 }
-.dym-timeline input[type=range] { flex: 1 1 auto; accent-color: #b8542f; }
+.dym-timeline input[type=range] { flex: 1 1 auto; accent-color: var(--dym-accent); }
 .dym-timeline .dym-time { flex: 0 0 auto; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .dym-resize { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; z-index: 3; }
 .dym-resize::after {
   content: ''; position: absolute; right: 4px; bottom: 4px; width: 8px; height: 8px;
-  border-right: 2px solid rgba(122,96,58,.65); border-bottom: 2px solid rgba(122,96,58,.65);
-}
-.dym-launcher {
-  position: fixed; z-index: 2147483000; width: 40px; height: 40px; border-radius: 50%; cursor: pointer;
-  display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700;
-  font-family: "Songti SC", "STSong", "SimSun", serif;
-  background: radial-gradient(circle at 32% 28%, #7c5528, #3f2a13);
-  color: #f4e6c6; border: 1px solid rgba(246,234,208,.55);
-  box-shadow: 0 8px 20px rgba(0,0,0,.45); user-select: none;
-}
-.dym-launcher:hover { transform: scale(1.06); }
-.dym-launcher .dym-launcher-dot {
-  position: absolute; top: -2px; right: -2px; width: 11px; height: 11px; border-radius: 50%;
-  background: #c4563a; border: 1px solid #f6ead0;
+  border-right: 2px solid rgba(217,192,140,.4); border-bottom: 2px solid rgba(217,192,140,.4);
+  border-radius: 1px;
 }
 
-/* ── SVG 图层 ───────────────────────────────────────────────────────── */
-.dym-link { stroke: rgba(108,84,48,.45); fill: none; }
+/* ── SVG 图层（宣纸画布上的墨与朱，保持原画法）────────────────────── */
+/* 连线：颜色不透明，透明度由元素上的 stroke-opacity 按层级给（越深越淡） */
+.dym-link { stroke: #7a623e; fill: none; stroke-linecap: round; }
 .dym-trail-glow { fill: none; stroke: rgba(196,110,70,.22); stroke-linejoin: round; stroke-linecap: round; }
 .dym-trail { fill: none; stroke: #a83a1a; stroke-linejoin: round; stroke-linecap: round; }
+/* 地名标签：只垫一层细描边（高德式）。注意 stroke-width 不写在 CSS 里 ——
+   文字在缩放坐标系里，CSS 的 2px 会被放大成几十像素的「气泡」；
+   由 canvas 按缩放倒数逐元素设置，保证永远约等于屏幕 2px。 */
+.dym-label {
+  paint-order: stroke; stroke: rgba(252,246,230,.85);
+  fill: #33291a; pointer-events: none;
+}
+.dym-label-major { fill: #241c10; letter-spacing: .04em; }
 .dym-node { cursor: pointer; }
 .dym-node text {
-  paint-order: stroke; stroke: rgba(253,247,232,.95); stroke-width: 3px;
-  pointer-events: none; font-family: "Songti SC", "STSong", "SimSun", serif; fill: #241d13;
+  paint-order: stroke; stroke: rgba(252,246,230,.85);
+  pointer-events: none; font-family: var(--dym-font); fill: #33291a;
 }
 .dym-node.dym-dim { opacity: .3; }
 .dym-node.dym-unplaced .dym-halo { stroke-dasharray: 3 2.5; }
@@ -2286,6 +3386,60 @@ const ICONS = {
         circles: [[4, 20, 2]],
     },
 };
+/** 界面小图标（Lucide，24×24 视口）。与地点图标分开，方便按语义取用。 */
+const UI = {
+    layers: {
+        paths: [
+            'M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z',
+            'm22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65',
+            'm22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65',
+        ],
+    },
+    pin: {
+        paths: ['M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0'],
+        circles: [[12, 10, 3]],
+    },
+    pencil: {
+        paths: [
+            'M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z',
+            'm15 5 4 4',
+        ],
+    },
+    route: {
+        paths: ['M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15'],
+        circles: [[6, 19, 3], [18, 5, 3]],
+    },
+    sliders: {
+        paths: ['M21 4h-7', 'M10 4H3', 'M21 12h-9', 'M8 12H3', 'M21 20h-5', 'M12 20H3', 'M14 2v4', 'M8 10v4', 'M16 18v4'],
+    },
+    panelRight: {
+        paths: ['M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z', 'M15 3v18'],
+    },
+    locate: {
+        paths: ['M2 12h3', 'M19 12h3', 'M12 2v3', 'M12 19v3'],
+        circles: [[12, 12, 6]],
+    },
+    fit: { paths: ['M15 3h6v6', 'M9 21H3v-6', 'M21 3l-7 7', 'M3 21l7-7'] },
+    close: { paths: ['M18 6 6 18', 'm6 6 12 12'] },
+    chevLeft: { paths: ['m15 18-6-6 6-6'] },
+    chevRight: { paths: ['m9 18 6-6-6-6'] },
+    plus: { paths: ['M5 12h14', 'M12 5v14'] },
+    minus: { paths: ['M5 12h14'] },
+    eye: {
+        paths: ['M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0'],
+        circles: [[12, 12, 3]],
+    },
+};
+/** 把 Lucide 路径数据渲染成内联 SVG 字符串（stroke 用 currentColor） */
+function svgIcon(icon, size = 16, strokeWidth = 2) {
+    const paths = icon.paths.map(d => `<path d="${d}"/>`).join('');
+    const circles = (icon.circles ?? []).map(([cx, cy, r]) => `<circle cx="${cx}" cy="${cy}" r="${r}"/>`).join('');
+    return (`<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor"` +
+        ` stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+        paths +
+        circles +
+        `</svg>`);
+}
 /** 罗盘（Lucide compass） */
 const COMPASS = {
     paths: ['m16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411a2 2 0 0 1 1.265-1.265z'],
@@ -2322,10 +3476,10 @@ function escapeHtml(text) {
     return String(text ?? '').replace(/[&<>"']/g, c => table[c] ?? c);
 }
 //# sourceMappingURL=theme.js.map
-return { STYLE_ID, CSS, ICONS, COMPASS, KIND_COLORS, KIND_LABELS, ensureStyle, escapeHtml };
+return { STYLE_ID, CSS, ICONS, UI, svgIcon, COMPASS, KIND_COLORS, KIND_LABELS, ensureStyle, escapeHtml };
 });
 __def("./ui/canvas.js", () => {
-const { ALTITUDE_OFFSET_PX, COLLAPSE_PX, COORD_MAX, COORD_MIN, TIER_FONT_PX, TIER_LABEL_SCALE, TIER_RADIUS_PX, TIER_VISIBLE_SCALE, tierOfKind } = __req('./types.js');
+const { ALTITUDE_OFFSET_PX, COLLAPSE_PX, COORD_MAX, COORD_MIN, TIER_FONT_PX, TIER_HIDE_ABOVE_SCALE, TIER_LABEL_SCALE, TIER_RADIUS_PX, TIER_VISIBLE_SCALE, tierOfKind } = __req('./types.js');
 const { tierOf } = __req('./graph.js');
 const { polylinePoints } = __req('./trail.js');
 const { COMPASS, ICONS, KIND_COLORS, KIND_LABELS, escapeHtml } = __req('./ui/theme.js');
@@ -2394,6 +3548,8 @@ class MapCanvas {
     connectors = [];
     drawn = [];
     childCount = new Map();
+    /** 顶部中间的坐标条：显示当前选中点的名称 + 坐标（没选中就藏起来） */
+    hud;
     constructor(wrap, hooks, view) {
         this.wrap = wrap;
         this.hooks = hooks;
@@ -2408,6 +3564,10 @@ class MapCanvas {
         this.layer.append(this.regionLayer, this.linkLayer, this.trailLayer, this.nodeLayer);
         this.svg.append(this.layer, this.overlay);
         wrap.appendChild(this.svg);
+        this.hud = wrap.ownerDocument.createElement('div');
+        this.hud.className = 'dym-hud';
+        this.hud.style.display = 'none';
+        wrap.appendChild(this.hud);
         this.bind();
     }
     setView(partial) {
@@ -2547,12 +3707,24 @@ class MapCanvas {
     /**
      * 轨迹落点：默认把市级以内（tier 4/5，比如某某客房、水井、马厩）的点**归并到它最近的市级祖先**，
      * 否则在客栈里走两步就画出一张蜘蛛网。关掉「轨迹只到市级」开关就恢复逐点绘制。
+     * 返回 null = 这个点的节点在底图里已经找不到（被清空/重建/换会话后 id 失联），
+     * 画线时必须在此断开 —— 否则按陈旧坐标硬画会连出一条指向空地的幻影长线。
      */
-    trailPos(point) {
+    trailNode(point) {
         const graph = this.view.graph;
         const node = graph.get(point.nodeId);
+        if (node)
+            return node;
+        // 自愈：底图重建后 id 会变，但 path 没变就还能认领回来
+        if (!point.path)
+            return null;
+        return graph.byPath.get(point.path) ?? null;
+    }
+    trailPos(point) {
+        const graph = this.view.graph;
+        const node = this.trailNode(point);
         if (!node)
-            return point.xy;
+            return null;
         if (this.view.trailCityOnly) {
             let cursor = node;
             const guard = new Set();
@@ -2574,7 +3746,7 @@ class MapCanvas {
         if (!this.view.showTrail)
             return [];
         const cut = this.view.timelineIndex === null ? this.view.trail : this.view.trail.slice(0, this.view.timelineIndex + 1);
-        return polylinePoints(cut, this.view.hiddenPointIds);
+        return polylinePoints(cut, this.view.hiddenPointIds).filter(point => this.trailNode(point));
     }
     // ── 高德式分级 + 屏幕空间去重 ────────────────────────────────────────
     currentLocationId() {
@@ -2625,8 +3797,14 @@ class MapCanvas {
                 continue;
             const tier = tierOf(node);
             const threshold = TIER_VISIBLE_SCALE[Math.min(tier, TIER_VISIBLE_SCALE.length - 1)] ?? 1;
-            if (this.scale >= threshold || keep.has(node.id))
-                candidates.push(node);
+            if (this.scale < threshold)
+                continue;
+            // 高倍缩放时大域/地域点自动退场（高德式）：放大到街区级，「中州」这种洲级粒度只剩噪音。
+            // 焦点/选中/当前地点的祖先链不受影响 —— 用户明确盯着的那条链保留。
+            const hideAbove = TIER_HIDE_ABOVE_SCALE[Math.min(tier, TIER_HIDE_ABOVE_SCALE.length - 1)];
+            if (this.scale > hideAbove && !keep.has(node.id))
+                continue;
+            candidates.push(node);
         }
         // 按优先级贪心占位：屏幕上贴太近的只留一个，缩小时洛阳就只剩一颗点
         const ranked = [...candidates].sort((a, b) => this.priority(b, currentId) - this.priority(a, currentId));
@@ -2643,6 +3821,9 @@ class MapCanvas {
             accepted.push({ node, sx, sy, tier: tierOf(node) });
         }
         this.drawn = accepted.map(item => item.node);
+        // 宏观视角：缩放还没到「看得见城内要点」的级别时（窗口跨度 ≥ 一个大域），
+        // 只报地名 —— 隐藏大域图标与层级连线，越宏观越要干净（细节留给放大后）。
+        const macro = this.scale < (TIER_VISIBLE_SCALE[4] ?? 2.6);
         // 区域轮廓：界域/地域是「一片地方」而不是「一个点」—— 用虚线多边形把范围围出来，
         // 才看得出「省」（州/域）和「市」（宗/城）的差别。
         // 优先用节点自带的 shape（AI 按资料推的边界），没有就用后代位置算个凸包兜底。
@@ -2689,8 +3870,11 @@ class MapCanvas {
         this.regionLayer.replaceChildren(regions);
         // 层级连线：只连到市级及以上（tier ≤ 3）。屋里那些房间不连线，
         // 否则一个客栈十三间房会从同一个点甩出十三根线，看着像蜘蛛网。
+        // 宏观视角整组不画 —— 跨越大半张图的长线在缩小时只是噪音。
+        // 接近阈值时按缩放淡入，避免「啪」地一下整片线闪出来。
+        const linkFade = Math.max(0, Math.min(1, (this.scale - (TIER_VISIBLE_SCALE[4] ?? 2.6)) / 0.6));
         const links = el('g');
-        if (this.view.showLinks) {
+        if (this.view.showLinks && linkFade > 0.04) {
             const acceptedIds = new Set(accepted.map(item => item.node.id));
             for (const item of accepted) {
                 if (item.tier > 3)
@@ -2703,14 +3887,20 @@ class MapCanvas {
                     continue;
                 const from = this.worldPos(parent);
                 const to = this.worldPos(item.node);
-                links.appendChild(el('line', {
-                    x1: from[0],
-                    y1: from[1],
-                    x2: to[0],
-                    y2: to[1],
+                const dx = to[0] - from[0];
+                const dy = to[1] - from[1];
+                const len = Math.hypot(dx, dy) || 1;
+                // 轻微弧线：控制点落在中点法线方向偏移 8%，比直线更像手绘地图上的连线
+                const bend = len * 0.08;
+                const mx = (from[0] + to[0]) / 2 - (dy / len) * bend;
+                const my = (from[1] + to[1]) / 2 + (dx / len) * bend;
+                links.appendChild(el('path', {
+                    d: `M${from[0]},${from[1]} Q${mx},${my} ${to[0]},${to[1]}`,
                     class: 'dym-link',
                     'vector-effect': 'non-scaling-stroke',
-                    'stroke-width': 1.1,
+                    'stroke-width': item.tier <= 2 ? 1.3 : 1,
+                    // 层级越深线越淡：一眼能看出主干（大域→城池）与末梢；再乘宏观淡入系数
+                    'stroke-opacity': String(Math.max(0.2, 0.58 - item.node.depth * 0.07) * linkFade),
                 }));
             }
         }
@@ -2758,42 +3948,58 @@ class MapCanvas {
                 segment = [];
             };
             points.forEach((point, index) => {
-                if (point.kind === 'travel' && segment.length) {
-                    segment.push(positions[index]);
-                    segmentTravel = true;
+                const pos = positions[index];
+                // 节点失联（底图里已删除/重建）：轨迹线在此断开，绝不按陈旧坐标连去空地
+                if (!pos) {
                     flush();
-                    segment = [positions[index]];
                     segmentTravel = false;
                     return;
                 }
-                segment.push(positions[index]);
+                if (point.kind === 'travel' && segment.length) {
+                    segment.push(pos);
+                    segmentTravel = true;
+                    flush();
+                    segment = [pos];
+                    segmentTravel = false;
+                    return;
+                }
+                segment.push(pos);
             });
             flush();
-            const last = positions[positions.length - 1];
-            // 这两个小圆同样必须按屏幕像素换算成世界单位：任何缩放级别下都保持同样大小。
-            // 脉冲环用 SVG <animate> 而不是 CSS keyframes —— CSS 里写死的 r 是世界单位，
-            // 放大到几十倍会变成几百像素的巨环（踩过这个坑）。
-            const pulse = el('circle', { cx: last[0], cy: last[1], r: 3.5 / this.scale, class: 'dym-pulse' });
-            for (const [attribute, values] of [
-                ['r', `${3.5 / this.scale};${17 / this.scale}`],
-                ['opacity', '0.55;0'],
-            ]) {
-                const animate = document.createElementNS(SVG_NS, 'animate');
-                animate.setAttribute('attributeName', attribute);
-                animate.setAttribute('values', values);
-                animate.setAttribute('dur', '1.9s');
-                animate.setAttribute('repeatCount', 'indefinite');
-                pulse.appendChild(animate);
+            // 脉冲点画在最后一个有效位置上
+            let last = null;
+            for (let index = positions.length - 1; index >= 0; index--) {
+                if (positions[index]) {
+                    last = positions[index];
+                    break;
+                }
             }
-            trailGroup.appendChild(pulse);
-            trailGroup.appendChild(el('circle', {
-                cx: last[0],
-                cy: last[1],
-                r: 4.4 / Math.max(0.3, this.scale),
-                fill: '#a83a1a',
-                stroke: 'rgba(253,247,232,.95)',
-                'stroke-width': 1.5 / Math.max(0.3, this.scale),
-            }));
+            if (last) {
+                // 这两个小圆同样必须按屏幕像素换算成世界单位：任何缩放级别下都保持同样大小。
+                // 脉冲环用 SVG <animate> 而不是 CSS keyframes —— CSS 里写死的 r 是世界单位，
+                // 放大到几十倍会变成几百像素的巨环（踩过这个坑）。
+                const pulse = el('circle', { cx: last[0], cy: last[1], r: 3.5 / this.scale, class: 'dym-pulse' });
+                for (const [attribute, values] of [
+                    ['r', `${3.5 / this.scale};${17 / this.scale}`],
+                    ['opacity', '0.55;0'],
+                ]) {
+                    const animate = document.createElementNS(SVG_NS, 'animate');
+                    animate.setAttribute('attributeName', attribute);
+                    animate.setAttribute('values', values);
+                    animate.setAttribute('dur', '1.9s');
+                    animate.setAttribute('repeatCount', 'indefinite');
+                    pulse.appendChild(animate);
+                }
+                trailGroup.appendChild(pulse);
+                trailGroup.appendChild(el('circle', {
+                    cx: last[0],
+                    cy: last[1],
+                    r: 4.4 / Math.max(0.3, this.scale),
+                    fill: '#a83a1a',
+                    stroke: 'rgba(253,247,232,.95)',
+                    'stroke-width': 1.5 / Math.max(0.3, this.scale),
+                }));
+            }
         }
         this.trailLayer.replaceChildren(trailGroup, altGroup);
         // 节点
@@ -2821,7 +4027,7 @@ class MapCanvas {
             const radius = (radiusPx * shrink) / Math.max(0.3, this.scale);
             const pos = this.worldPos(node);
             const color = KIND_COLORS[node.kind] ?? '#6f6252';
-            const group = el('g', { class: 'dym-node', 'data-id': node.id });
+            const group = el('g', { class: `dym-node dym-lv${tier}`, 'data-id': node.id });
             if (node.status === 'unplaced')
                 group.classList.add('dym-unplaced');
             if (node.id === this.view.selectedId)
@@ -2830,6 +4036,19 @@ class MapCanvas {
                 const inside = graph.ancestors(node.id).some(ancestor => ancestor.id === this.view.focusId);
                 if (!inside && tier >= 3)
                     group.classList.add('dym-dim');
+            }
+            // 界域/地域是「一片地方」，加一圈极淡的外环，让它与城池/宗门在观感上分开
+            if (tier <= 2) {
+                group.appendChild(el('circle', {
+                    cx: pos[0],
+                    cy: pos[1],
+                    r: radius * 1.62,
+                    fill: 'none',
+                    stroke: color,
+                    'stroke-opacity': 0.2,
+                    'vector-effect': 'non-scaling-stroke',
+                    'stroke-width': 1,
+                }));
             }
             const halo = el('circle', {
                 cx: pos[0],
@@ -2842,26 +4061,30 @@ class MapCanvas {
             halo.setAttribute('stroke-width', String(1.4 / Math.max(0.3, this.scale)));
             group.appendChild(halo);
             group.appendChild(el('circle', { cx: pos[0], cy: pos[1], r: radius * 0.72, fill: color }));
-            const icon = ICONS[node.kind] ?? ICONS.poi;
-            const iconScale = (radius * 1.35) / 24;
-            const iconGroup = el('g', {
-                transform: `translate(${pos[0] - 12 * iconScale},${pos[1] - 12 * iconScale}) scale(${iconScale})`,
-                fill: 'none',
-                stroke: 'rgba(253,247,232,.95)',
-                'stroke-width': 2,
-                'stroke-linecap': 'round',
-                'stroke-linejoin': 'round',
-            });
-            for (const d of icon.paths)
-                iconGroup.appendChild(el('path', { d }));
-            for (const [cx, cy, r] of icon.circles ?? [])
-                iconGroup.appendChild(el('circle', { cx, cy, r }));
-            group.appendChild(iconGroup);
+            // 宏观视角下大域只留地名（图标在这个尺度纯属噪音）；放大后再把图标带回来
+            if (!(macro && tier <= 2)) {
+                const icon = ICONS[node.kind] ?? ICONS.poi;
+                const iconScale = (radius * 1.35) / 24;
+                const iconGroup = el('g', {
+                    transform: `translate(${pos[0] - 12 * iconScale},${pos[1] - 12 * iconScale}) scale(${iconScale})`,
+                    fill: 'none',
+                    stroke: 'rgba(253,247,232,.95)',
+                    'stroke-width': 2,
+                    'stroke-linecap': 'round',
+                    'stroke-linejoin': 'round',
+                });
+                for (const d of icon.paths)
+                    iconGroup.appendChild(el('path', { d }));
+                for (const [cx, cy, r] of icon.circles ?? [])
+                    iconGroup.appendChild(el('circle', { cx, cy, r }));
+                group.appendChild(iconGroup);
+            }
             if (node.altitude) {
                 const badge = el('text', {
                     x: pos[0] + radius * 1.15,
                     y: pos[1] - radius * 0.75,
                     'font-size': 12 / Math.max(0.3, this.scale),
+                    'stroke-width': 2 / Math.max(0.3, this.scale),
                     fill: '#4f6d78',
                 });
                 badge.textContent = node.altitude > 0 ? '▲' : '▼';
@@ -2873,34 +4096,82 @@ class MapCanvas {
                 labelCandidates.push({ node, pos, tier });
             }
         }
-        // 标签避让：大的先占位，压住的就不画。
-        // 判定用的是**标签矩形**（锚点 + 文字宽度）而不是锚点距离 —— 否则右侧延伸的文字
-        // 会盖住下一个点的标签，看起来就是一团糊。
-        labelCandidates.sort((a, b) => a.tier - b.tier);
+        // 标签避让（高德式）：
+        //   1) 选中 / 当前地点是「种子」，最先占位，别的标签必须绕开它们；
+        //   2) 其余按层级从大到小排队，先试点标**右侧**，放不下换**左侧**，两侧都没有空间才不画；
+        //   3) 判定用标签矩形（锚点 + 文字宽度），并且**点标本身也是障碍物** —— 标签不许压到别家的圆点。
+        const isSeedLabel = (id) => id === this.view.selectedId || id === currentId;
+        labelCandidates.sort((a, b) => {
+            const seedA = isSeedLabel(a.node.id) ? 0 : 1;
+            const seedB = isSeedLabel(b.node.id) ? 0 : 1;
+            return seedA - seedB || a.tier - b.tier;
+        });
+        const labelObstacles = accepted.map(item => ({
+            id: item.node.id,
+            box: [
+                item.sx - (TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6) * 1.05,
+                item.sy - (TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6) * 1.05,
+                item.sx + (TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6) * 1.05,
+                item.sy + (TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6) * 1.05,
+            ],
+        }));
+        const labelBoxes = [];
         const acceptedLabels = [];
         for (const item of labelCandidates) {
             const sx = item.pos[0] * this.scale + this.tx;
             const sy = item.pos[1] * this.scale + this.ty;
             const fontPx = TIER_FONT_PX[Math.min(item.tier, TIER_FONT_PX.length - 1)] ?? 12;
             const radiusPx = TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6;
-            const x0 = sx + radiusPx * 1.35;
-            const width = Math.max(14, item.node.name.length * fontPx * 1.02);
-            const box = [x0 - 2, sy - fontPx * 0.8, x0 + width + 2, sy + fontPx * 0.4];
-            const clash = acceptedLabels.some(existing => box[0] < existing.box[2] && box[2] > existing.box[0] && box[1] < existing.box[3] && box[3] > existing.box[1]);
-            if (clash && item.node.id !== this.view.selectedId && item.node.id !== currentId)
-                continue;
-            acceptedLabels.push({ ...item, box });
+            const width = Math.max(14, item.node.name.length * fontPx * 1.04);
+            const trySide = (side) => {
+                const x0 = side === 'right' ? sx + radiusPx * 1.3 : sx - radiusPx * 1.3 - width;
+                const box = [x0 - 2, sy - fontPx * 0.85, x0 + width + 2, sy + fontPx * 0.45];
+                for (const other of labelBoxes) {
+                    if (box[0] < other[2] && box[2] > other[0] && box[1] < other[3] && box[3] > other[1])
+                        return null;
+                }
+                for (const obstacle of labelObstacles) {
+                    // 自己的点标不算障碍（标签本来就从自己点旁边开始）
+                    if (obstacle.id === item.node.id)
+                        continue;
+                    if (box[0] < obstacle.box[2] && box[2] > obstacle.box[0] && box[1] < obstacle.box[3] && box[3] > obstacle.box[1]) {
+                        return null;
+                    }
+                }
+                return box;
+            };
+            let side = 'right';
+            let box = trySide('right');
+            if (!box) {
+                side = 'left';
+                box = trySide('left');
+            }
+            if (!box) {
+                // 种子标签（选中/当前地点）必须画出来：实在没空间就放右侧，普通标签直接放弃
+                if (!isSeedLabel(item.node.id))
+                    continue;
+                side = 'right';
+                const x0 = sx + radiusPx * 1.3;
+                box = [x0, sy - fontPx * 0.85, x0 + width + 2, sy + fontPx * 0.45];
+            }
+            labelBoxes.push(box);
+            acceptedLabels.push({ node: item.node, pos: item.pos, sx, sy, tier: item.tier, side });
             if (acceptedLabels.length >= 70)
                 break;
         }
         for (const item of acceptedLabels) {
-            const radius = ((TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6) * 0.9) / Math.max(0.3, this.scale);
             const fontPx = TIER_FONT_PX[Math.min(item.tier, TIER_FONT_PX.length - 1)] ?? 12;
+            const radiusPx = TIER_RADIUS_PX[Math.min(item.tier, TIER_RADIUS_PX.length - 1)] ?? 6;
+            // 文字在缩放坐标系里，描边宽度按缩放倒数给 —— 否则 CSS 的 2px 会被放大成几十像素的气泡
+            const k = 1 / Math.max(0.3, this.scale);
             const text = el('text', {
-                x: item.pos[0] + radius * 1.35,
-                y: item.pos[1] + radius * 0.45,
-                'font-size': fontPx / Math.max(0.3, this.scale),
+                x: item.pos[0] + (item.side === 'left' ? -1 : 1) * radiusPx * 1.3 * k,
+                y: item.pos[1] + fontPx * 0.34 * k,
+                'font-size': fontPx * k,
+                'stroke-width': (item.tier <= 2 ? 2.6 : 2.2) * k,
                 'font-weight': item.tier <= 2 ? '700' : '400',
+                'text-anchor': item.side === 'left' ? 'end' : 'start',
+                class: item.tier <= 2 ? 'dym-label dym-label-major' : 'dym-label',
             });
             text.textContent = item.node.name;
             nodeGroup.appendChild(text);
@@ -2925,6 +4196,18 @@ class MapCanvas {
         this.overlay.replaceChildren(compass);
         this.wrap.dataset.dymScale = this.scale.toFixed(2);
         this.wrap.dataset.dymNodes = String(accepted.length);
+        // 顶部坐标条：只显示「当前选中的点」——名称 + 坐标（有高度再带上高度）
+        const selectedNode = this.view.selectedId ? graph.get(this.view.selectedId) : undefined;
+        if (selectedNode) {
+            const coord = (value) => String(Math.round(value * 10) / 10);
+            const altitude = selectedNode.altitude ? `　高度 ${(selectedNode.altitude / 1e8).toFixed(2)} 亿里` : '';
+            this.hud.textContent = `${selectedNode.name}　(${coord(selectedNode.xy[0])}, ${coord(selectedNode.xy[1])})${altitude}`;
+            this.hud.title = selectedNode.path;
+            this.hud.style.display = 'block';
+        }
+        else {
+            this.hud.style.display = 'none';
+        }
     }
     // ── 交互 ────────────────────────────────────────────────────────────
     hitTest(clientX, clientY) {
@@ -3057,7 +4340,8 @@ class MapCanvas {
     describeNode(node) {
         const altitude = node.altitude ? `｜高度 ${(node.altitude / 1e8).toFixed(2)} 亿里` : '';
         const status = node.status === 'unplaced' ? '｜待定位' : '';
-        return `层级 ${tierOf(node)}｜${KIND_LABELS[node.kind] ?? '地点'}｜(${node.xy[0].toFixed(1)}, ${node.xy[1].toFixed(1)})${altitude}${status}`;
+        const tier = node.tier ? `${tierOf(node)}（手动）` : String(tierOf(node));
+        return `层级 ${tier}｜${KIND_LABELS[node.kind] ?? '地点'}｜(${node.xy[0].toFixed(1)}, ${node.xy[1].toFixed(1)})${altitude}${status}`;
     }
     destroy() {
         this.svg.remove();
@@ -3090,20 +4374,33 @@ return { MapCanvas, defaultView, WORLD_BOUNDS, html, tierOfKind };
 });
 __def("./ui/window.js", () => {
 const { ID_PREFIX } = __req('./types.js');
-const { KIND_COLORS, KIND_LABELS, escapeHtml, ensureStyle } = __req('./ui/theme.js');
+const { COMPASS, KIND_COLORS, KIND_LABELS, UI, escapeHtml, ensureStyle, svgIcon } = __req('./ui/theme.js');
 const TABS = [
-    { key: 'layers', label: '图层' },
-    { key: 'places', label: '地点' },
-    { key: 'edit', label: '编辑' },
-    { key: 'trail', label: '轨迹' },
-    { key: 'settings', label: '设置' },
+    { key: 'layers', label: '图层', icon: UI.layers },
+    { key: 'places', label: '地点', icon: UI.pin },
+    { key: 'edit', label: '编辑', icon: UI.pencil },
+    { key: 'trail', label: '轨迹', icon: UI.route },
+    { key: 'settings', label: '设置', icon: UI.sliders },
 ];
+/** 轻提示：走宿主的 toastr（酒馆页面右上角），没有就落控制台 */
+function toast(kind, message) {
+    try {
+        const host = window.parent && window.parent !== window ? window.parent : window;
+        const fn = host.toastr?.[kind];
+        if (typeof fn === 'function')
+            fn(message, '世界舆图');
+        else
+            window.console.log('[世界舆图]', kind, message);
+    }
+    catch {
+        window.console.log('[世界舆图]', message);
+    }
+}
 class MapWindow {
     doc;
     actions;
     canvasWrap;
     root;
-    launcher;
     drawer;
     drawerHandle;
     panes = new Map();
@@ -3135,11 +4432,6 @@ class MapWindow {
         this.root = doc.createElement('div');
         this.root.id = `${ID_PREFIX}root`;
         this.root.className = 'worldmap-root';
-        this.launcher = doc.createElement('div');
-        this.launcher.id = `${ID_PREFIX}launcher`;
-        this.launcher.className = 'dym-launcher';
-        this.launcher.title = '世界舆图';
-        this.launcher.innerHTML = '舆<span class="dym-launcher-dot"></span>';
         this.build();
         this.applyLayout(data.layout);
         this.bindChrome();
@@ -3149,14 +4441,14 @@ class MapWindow {
         // 标题栏
         const bar = doc.createElement('div');
         bar.className = 'dym-titlebar';
-        bar.innerHTML = `<span class="dym-title">世界舆图</span><span class="dym-badge" data-role="badge">—</span>
+        bar.innerHTML = `<span class="dym-logo">${svgIcon(COMPASS, 15, 1.8)}</span><span class="dym-title">世界舆图</span><span class="dym-badge" data-role="badge">—</span>
       <span class="dym-rail-hint">点开</span>
       <span class="dym-spacer"></span>
       <div class="dym-actions">
-        <button data-act="drawer" title="收起 / 展开右侧栏">»</button>
-        <button data-act="locate" title="定位到当前地点">⌖</button>
-        <button data-act="fit" title="全图">⤢</button>
-        <button data-act="close" title="关闭（点脚本按钮可重新打开）">×</button>
+        <button data-act="drawer" title="收起 / 展开右侧栏">${svgIcon(UI.panelRight, 15)}</button>
+        <button data-act="locate" title="定位到当前地点">${svgIcon(UI.locate, 15)}</button>
+        <button data-act="fit" title="全图">${svgIcon(UI.fit, 14)}</button>
+        <button data-act="close" title="关闭（点脚本按钮可重新打开）">${svgIcon(UI.close, 15)}</button>
       </div>`;
         this.badge = bar.querySelector('[data-role=badge]');
         // 主体
@@ -3170,7 +4462,7 @@ class MapWindow {
         this.breadcrumb.className = 'dym-breadcrumb';
         const zoomCtl = doc.createElement('div');
         zoomCtl.className = 'dym-zoomctl';
-        zoomCtl.innerHTML = `<button data-act="zoom-in">＋</button><button data-act="zoom-out">－</button>`;
+        zoomCtl.innerHTML = `<button data-act="zoom-in" title="放大">${svgIcon(UI.plus, 14)}</button><button data-act="zoom-out" title="缩小">${svgIcon(UI.minus, 14)}</button>`;
         const legend = doc.createElement('div');
         legend.className = 'dym-legend';
         legend.innerHTML = ['realm', 'region', 'power', 'city', 'site']
@@ -3185,7 +4477,7 @@ class MapWindow {
         this.drawerHandle.className = 'dym-drawer-toggle';
         this.drawerHandle.type = 'button';
         this.drawerHandle.title = '收起 / 展开右侧栏';
-        this.drawerHandle.textContent = '›';
+        this.drawerHandle.innerHTML = svgIcon(UI.chevRight, 12);
         this.drawerHandle.addEventListener('click', () => this.toggleDrawer());
         const tabs = doc.createElement('div');
         tabs.className = 'dym-tabs';
@@ -3193,7 +4485,8 @@ class MapWindow {
         panes.className = 'dym-panes';
         for (const tab of TABS) {
             const button = doc.createElement('button');
-            button.textContent = tab.label;
+            button.innerHTML = `${svgIcon(tab.icon, 17)}<span>${tab.label}</span>`;
+            button.title = tab.label;
             button.dataset.tab = tab.key;
             button.addEventListener('click', () => this.setTab(tab.key));
             tabs.appendChild(button);
@@ -3257,11 +4550,11 @@ class MapWindow {
         const layers = this.panes.get('layers');
         layers.innerHTML = `
       <div class="dym-switches">
-        <label><input type="checkbox" data-layer="showTrail"> 显示轨迹</label>
-        <label><input type="checkbox" data-layer="trailCityOnly"> 轨迹只连到市级（去掉城内蜘蛛网）</label>
-        <label><input type="checkbox" data-layer="showLinks"> 显示层级连线</label>
-        <label><input type="checkbox" data-layer="showRegions"> 显示区域轮廓（州/域用虚线围范围）</label>
-        <label><input type="checkbox" data-layer="showUnplaced"> 显示待定位节点</label>
+        <label><input type="checkbox" data-layer="showTrail"><span>显示轨迹</span><span class="dym-track" aria-hidden="true"></span></label>
+        <label><input type="checkbox" data-layer="trailCityOnly"><span>轨迹只连到市级（去掉城内蜘蛛网）</span><span class="dym-track" aria-hidden="true"></span></label>
+        <label><input type="checkbox" data-layer="showLinks"><span>显示层级连线</span><span class="dym-track" aria-hidden="true"></span></label>
+        <label><input type="checkbox" data-layer="showRegions"><span>显示区域轮廓（州/域用虚线围范围）</span><span class="dym-track" aria-hidden="true"></span></label>
+        <label><input type="checkbox" data-layer="showUnplaced"><span>显示待定位节点</span><span class="dym-track" aria-hidden="true"></span></label>
       </div>
       <div class="dym-row"><button class="dym-btn" data-act="scatter">环形铺开待定位节点</button></div>
       <div class="dym-hint" data-role="layer-hint"></div>`;
@@ -3280,25 +4573,41 @@ class MapWindow {
         // ── 编辑 ──
         const edit = this.panes.get('edit');
         edit.innerHTML = `
-      <div class="dym-switches"><label><input type="checkbox" data-role="edit-mode"> 编辑模式（拖动节点改位置）</label></div>
+      <div class="dym-switches"><label><input type="checkbox" data-role="edit-mode"><span>编辑模式（拖动节点改位置）</span><span class="dym-track" aria-hidden="true"></span></label></div>
       <div class="dym-row">
         <button class="dym-btn" data-act="undo">撤销</button>
         <button class="dym-btn" data-act="redo">重做</button>
       </div>
-      <div class="dym-hint" data-role="selected-info">未选中节点。</div>
-      <div class="dym-field"><label>名称</label><input type="text" data-role="node-name"></div>
-      <div class="dym-field"><label>X</label><input type="number" step="0.1" data-role="node-x"></div>
-      <div class="dym-field"><label>Y</label><input type="number" step="0.1" data-role="node-y"></div>
-      <div class="dym-row"><button class="dym-btn" data-act="apply-xy">应用坐标</button></div>
-      <div class="dym-field"><label>新地点</label><input type="text" data-role="child-name" placeholder="新子地点名称"></div>
-      <div class="dym-row">
-        <button class="dym-btn" data-act="add-child">加子节点</button>
-        <button class="dym-btn" data-act="add-sibling">加同级</button>
-        <button class="dym-btn" data-act="add-free">在视图中心新增</button>
+      <div class="dym-card">
+        <div class="dym-sect">选中节点</div>
+        <div class="dym-hint" data-role="selected-info">未选中节点。</div>
+        <div class="dym-field"><label>名称</label><input type="text" data-role="node-name"></div>
+        <div class="dym-field"><label>X</label><input type="number" step="0.1" data-role="node-x"></div>
+        <div class="dym-field"><label>Y</label><input type="number" step="0.1" data-role="node-y"></div>
+        <div class="dym-field"><label>显示层级</label>
+          <select data-role="node-tier">
+            <option value="">自动（按类型推导）</option>
+            <option value="1">1 · 界域 / 大域</option>
+            <option value="2">2 · 地域 / 地貌</option>
+            <option value="3">3 · 城池 / 宗级势力</option>
+            <option value="4">4 · 具体地点</option>
+            <option value="5">5 · 房间</option>
+          </select>
+        </div>
+        <div class="dym-row"><button class="dym-btn dym-primary" data-act="apply-xy">应用坐标</button></div>
+      </div>
+      <div class="dym-card">
+        <div class="dym-sect">新增地点</div>
+        <div class="dym-field"><label>名称</label><input type="text" data-role="child-name" placeholder="新子地点名称"></div>
+        <div class="dym-row">
+          <button class="dym-btn" data-act="add-child">加子节点</button>
+          <button class="dym-btn" data-act="add-sibling">加同级</button>
+          <button class="dym-btn" data-act="add-free">在视图中心新增</button>
+        </div>
       </div>
       <div class="dym-row">
         <button class="dym-btn" data-act="toggle-lock">锁定 / 解锁</button>
-        <button class="dym-btn" data-act="delete-node">删除节点</button>
+        <button class="dym-btn dym-danger" data-act="delete-node">删除节点</button>
       </div>
       <div class="dym-hint">
         增点：<b>开启编辑模式后，在画布空白处右键或双击</b>即可在那里新增一个地点（会挂在当前下钻的节点下）。<br>
@@ -3318,6 +4627,12 @@ class MapWindow {
             this.actions.onMoveSelected([x, y]);
         };
         edit.querySelector('[data-act=apply-xy]')?.addEventListener('click', applyXy);
+        edit.querySelector('[data-role=node-tier]')?.addEventListener('change', event => {
+            if (!this.data.selectedId)
+                return;
+            const raw = event.target.value;
+            this.actions.onSetNodeTier(this.data.selectedId, raw === '' ? null : Number(raw));
+        });
         const childName = () => edit.querySelector('[data-role=child-name]').value.trim();
         edit.querySelector('[data-act=add-child]')?.addEventListener('click', () => {
             const name = childName() || '新地点';
@@ -3366,10 +4681,17 @@ class MapWindow {
         <button class="dym-btn" data-act="rebuild">从聊天记录重算</button>
         <button class="dym-btn" data-act="clear-hidden">恢复全部显示</button>
       </div>
+      <div class="dym-row">
+        <button class="dym-btn dym-primary" data-act="ai-fix-history">AI 整理本会话地点</button>
+      </div>
+      <div class="dym-hint">聊天中途才装插件、或 AI 写的地点串太脏（混描述/时刻/拼层级）？点它把本会话出现过的
+        原始地点串发给模型规范化成干净路径，玩出来的非设定地点顺带按方位给相对坐标。
+        从头开始玩的新档不需要；整理结果存在本会话的轨迹数据里，重算时自动套用。</div>
       <div class="dym-hint" data-role="trail-hint"></div>
       <ul class="dym-list" data-role="trail-list"></ul>`;
         trail.querySelector('[data-act=rebuild]')?.addEventListener('click', () => this.actions.onRebuildTrail());
         trail.querySelector('[data-act=clear-hidden]')?.addEventListener('click', () => this.actions.onClearHiddenPoints());
+        trail.querySelector('[data-act=ai-fix-history]')?.addEventListener('click', () => this.actions.onAiFixHistory());
         // ── 设置 ──
         const settings = this.panes.get('settings');
         settings.innerHTML = `
@@ -3379,7 +4701,7 @@ class MapWindow {
         <div class="dym-field"><label>密钥</label>
           <span class="dym-pw">
             <input type="password" data-set="key" placeholder="留空表示接口不需要密钥" autocomplete="off">
-            <button type="button" data-act="toggle-key" title="显示 / 隐藏密钥">👁</button>
+            <button type="button" data-act="toggle-key" title="显示 / 隐藏密钥">${svgIcon(UI.eye, 14)}</button>
           </span>
         </div>
         <div class="dym-field"><label>模型</label>
@@ -3388,6 +4710,7 @@ class MapWindow {
         <div class="dym-field"><label>自定义</label><input type="text" data-set="model" placeholder="也可以直接手填模型名"></div>
         <div class="dym-row"><button class="dym-btn" data-act="fetch-models">获取模型列表</button>
           <button class="dym-btn" data-act="test-api">测试连接</button></div>
+        <div class="dym-api-result" data-role="api-result"></div>
         <div class="dym-field"><label>上限</label><input type="number" data-set="maxTokens" step="1024"></div>
         <div class="dym-hint">上限 = <b>一次最多让模型写多少 token</b>（只是输出长度，不影响读进去的世界书）。
           生成底图正常十来条资料，<b>16384 够用</b>；要是哪天一次喂 100 多条（比如从控制台跑 <code>__worldMap.runLayout('all')</code>），
@@ -3402,8 +4725,15 @@ class MapWindow {
         <div class="dym-hint">
           读世界书里的<b>地点类条目</b>（《玄天界介绍》《地点：X》这类总纲），一次性给出大域、主要势力、
           主要城池的坐标；已经人工拖过的点会跳过，不会覆盖。<br>
+          定位顺序：<b>方位补充表（主）→ 坐标骨架 → 世界书条目（校验与补漏）</b>；
+          条目与补充表冲突时以补充表为准，冲突会写进节点的备注。<br>
           想要更细的城内地点，在地图上双击下钻后<b>手动加</b>更稳（AI 细化很容易编出无意义的小点）。
         </div>
+        <div class="dym-field dym-col"><label>方位补充表（先按它落点；格式：地名-方位-距离(亿里)，可写相对线索）</label>
+          <textarea data-set="layoutSupplement" rows="9" placeholder="留空 = 不用补充表，纯按世界书条目定位"></textarea>
+        </div>
+        <div class="dym-hint">改完记得点「保存设置」再生成。示例见 <code>docs/底图补充.txt</code>；
+          相对线索的写法：<code>距某地N</code>、<code>向某方向N到某地</code>、<code>正上/正下方</code>、<code>宽N</code>。</div>
         <div class="dym-row"><button class="dym-btn dym-primary" data-act="layout-world">生成底图</button></div>
         <div class="dym-hint">生成结果（用了哪些条目、新增/移动/丢弃多少、模型原始回复）会显示在下面这块，同时抄一份到「导出 / 导入」的文本框里方便留存。</div>
         <div class="dym-report" data-role="layout-report">还没跑过地图布局 AI。</div>
@@ -3436,6 +4766,54 @@ class MapWindow {
           <button class="dym-btn" data-act="pick-file">选文件</button>
         </div>
         <div class="dym-hint" data-role="io-hint">导出的文件会存到浏览器的下载目录；不确定的话直接用「复制」再粘到别处。</div>
+      </details>
+
+      <details class="dym-sec"><summary>坐标世界书与地理态势</summary>
+        <div class="dym-hint">
+          把底图同步成插件<b>自建</b>的世界书《世界舆图·坐标表》并挂到角色卡：<b>原世界书一个字不动</b>。
+          正文提到某地才注入该地坐标（绿灯，不提不花 token）；每回合另注入一段「当前位置 + 周边 + 地界规则」。
+          同步是<b>单向</b>的（底图 → 世界书）：在世界书里手改的坐标会被下次同步覆盖。
+        </div>
+        <div class="dym-row"><span class="dym-tag" data-role="geo-mount">…</span></div>
+        <div class="dym-row">
+          <button class="dym-btn dym-primary" data-act="geo-mount">生成并挂载坐标世界书</button>
+          <button class="dym-btn" data-act="geo-sync">立即同步</button>
+        </div>
+        <div class="dym-hint">「立即同步」= 按当前底图与设置**整体重写**《世界舆图·坐标表》：
+          蓝灯的总纲/移动规则/叙事规则 3 条 + 当前已确认的地点条目（待定位的虚线圈本来就不进书）。
+          切换会话后条目数量变化，多半是新会话的轨迹产生了新地点 —— 想清掉旧档地名就点下面的清理按钮。</div>
+        <div class="dym-row">
+          <button class="dym-btn" data-act="geo-remount">修复挂载（重新挂）</button>
+          <button class="dym-btn" data-act="geo-unmount">卸载（解除绑定）</button>
+          <button class="dym-btn dym-danger" data-act="geo-delete">删除坐标世界书</button>
+        </div>
+        <div class="dym-hint">「修复挂载」不碰书内容，只把角色卡上的绑定重写一遍并读回校验——
+          状态显示「未挂载」或正文读不到坐标条目时点它（挂载接口报错、被别的脚本改了绑定都靠它恢复）。</div>
+        <div class="dym-hint">挂载对齐成熟 DLC 的做法：追加为角色卡<b>附加世界书</b>（不碰主书），写完读回校验；
+          卸载只解绑不删书。「删除」才是连书一起删（两步确认）。</div>
+        <div class="dym-switches">
+          <label><input type="checkbox" data-gset="coordEnabled"><span>底图变更后自动同步进世界书</span><span class="dym-track" aria-hidden="true"></span></label>
+          <label><input type="checkbox" data-gset="coordTier4"><span>收录城内要点（tier 4：某宫某阁这类）</span><span class="dym-track" aria-hidden="true"></span></label>
+          <label><input type="checkbox" data-gset="geoEnabled"><span>每回合注入「地理态势」（关闭 = 只靠世界书条目）</span><span class="dym-track" aria-hidden="true"></span></label>
+          <label><input type="checkbox" data-gset="geoBounds"><span>注入地界规则（非本地势力需有理由才能生事）</span><span class="dym-track" aria-hidden="true"></span></label>
+          <label><input type="checkbox" data-gset="geoJump"><span>位移超限时附「远行提示」</span><span class="dym-track" aria-hidden="true"></span></label>
+        </div>
+        <div class="dym-hint">坐标书里只有「设定里的地方」和确认过的城内要点；轨迹自动产生的待定位虚线圈本来就不进书。</div>
+        <div class="dym-row">
+          <button class="dym-btn" data-act="geo-preview">预览本回合态势（写入下方文本框）</button>
+        </div>
+        <div class="dym-field dym-col"><label>人物移动规则（蓝灯条目，随坐标书常驻注入）</label>
+          <textarea data-gset-text="movementRules" rows="7" placeholder="各境界日行速度与移动方式…（保存后会作为 [舆图]人物移动规则 写进坐标书）"></textarea>
+        </div>
+        <div class="dym-switches"><label><input type="checkbox" data-gset="coordMovementOn"><span>把人物移动规则写进坐标书</span><span class="dym-track" aria-hidden="true"></span></label></div>
+        <div class="dym-field dym-col"><label>叙事地理规则（蓝灯条目：坐标权威 + 远方事件隔离）</label>
+          <textarea data-gset-text="narrativeRules" rows="7" placeholder="远方事件不串场、坐标数据优先于世界书条目方位…（保存后会作为 [舆图]叙事地理规则 写进坐标书）"></textarea>
+        </div>
+        <div class="dym-switches"><label><input type="checkbox" data-gset="coordNarrativeOn"><span>把叙事地理规则写进坐标书</span><span class="dym-track" aria-hidden="true"></span></label></div>
+        <div class="dym-hint">两段文本都<b>已预填默认内容</b>，直接在框里改即可（失焦即保存，改完点「立即同步」写进书）。
+          距离换算以总纲为准（1 坐标格 ≈ 15 亿里）；它们放蓝灯是为了「写剧情时一定在场」，
+          且生效范围恰好等于坐标书本身：卸载坐标书，规则随之消失，不会变成死条目。</div>
+        <div class="dym-hint" data-role="geo-hint"></div>
       </details>
 
       <details class="dym-sec"><summary>其他</summary>
@@ -3497,7 +4875,47 @@ class MapWindow {
         });
         settings.querySelector('[data-act=pick-file]')?.addEventListener('click', () => this.fileInput.click());
         settings.querySelector('[data-act=export-trail]')?.addEventListener('click', () => this.actions.onExportTrail());
+        // ── 坐标世界书与地理态势 ──
+        settings.querySelector('[data-act=geo-mount]')?.addEventListener('click', () => this.actions.onMountCoordBook());
+        settings.querySelector('[data-act=geo-sync]')?.addEventListener('click', () => this.actions.onSyncCoordBook());
+        settings.querySelector('[data-act=geo-remount]')?.addEventListener('click', () => this.actions.onRemountCoordBook());
+        settings.querySelector('[data-act=geo-unmount]')?.addEventListener('click', () => this.actions.onUnmountCoordBook());
+        // 删书是破坏性动作：两步确认（隐藏 iframe 里弹不了 confirm）
+        const geoDelete = settings.querySelector('[data-act=geo-delete]');
+        geoDelete.addEventListener('click', () => {
+            if (geoDelete.dataset.armed === '1') {
+                geoDelete.dataset.armed = '';
+                geoDelete.textContent = '删除坐标世界书';
+                this.actions.onDeleteCoordBook();
+                return;
+            }
+            geoDelete.dataset.armed = '1';
+            geoDelete.textContent = '再点一次确认删除（解绑 + 删书）';
+            setTimeout(() => {
+                if (geoDelete.dataset.armed === '1') {
+                    geoDelete.dataset.armed = '';
+                    geoDelete.textContent = '删除坐标世界书';
+                }
+            }, 4000);
+        });
+        settings.querySelector('[data-act=geo-preview]')?.addEventListener('click', () => {
+            const text = this.actions.onGeoPreview();
+            this.setIo(text, '这是「地理态势」注入的原文（每回合按当前坐标现算，只在下一轮生成时进入模型上下文）。');
+        });
+        settings.querySelectorAll('[data-gset]').forEach(input => {
+            input.addEventListener('change', () => this.collectGeoSettings());
+        });
+        // 规则文本框：失焦即保存（读当前 coordBook 全量、只覆盖对应字段，两个框互不覆盖）
+        const movementInput = settings.querySelector('[data-gset-text=movementRules]');
+        movementInput.addEventListener('change', () => {
+            this.saveCoordBookField('movementRules', movementInput.value, '移动规则已保存。下次同步（挂载后自动 / 点「立即同步」）会写进坐标书蓝灯条目。');
+        });
+        const narrativeInput = settings.querySelector('[data-gset-text=narrativeRules]');
+        narrativeInput.addEventListener('change', () => {
+            this.saveCoordBookField('narrativeRules', narrativeInput.value, '叙事规则已保存。下次同步（挂载后自动 / 点「立即同步」）会写进坐标书蓝灯条目。');
+        });
         this.fillSettings();
+        this.fillGeoSettings();
     }
     ioPane() {
         return this.panes.get('settings');
@@ -3540,6 +4958,14 @@ class MapWindow {
             area.value = text;
         this.setIoHint(hint);
         this.setTab('settings');
+    }
+    /** 轻操作（获取模型/测试连接）的就地结果：写在按钮下面的小结果条里，不滚动、不跳页签 */
+    showApiResult(text) {
+        const box = this.ioPane().querySelector('[data-role=api-result]');
+        if (box) {
+            box.textContent = text;
+            box.scrollTop = 0;
+        }
     }
     async copyIo() {
         const text = this.ioValue();
@@ -3591,11 +5017,90 @@ class MapWindow {
             maxTokens: api?.maxTokens,
             temperature: api?.temperature,
             presetUrl: this.data.settings?.presetUrl,
+            layoutSupplement: this.data.settings?.layoutSupplement ?? '',
         };
         pane.querySelectorAll('[data-set]').forEach(input => {
+            if (document.activeElement === input)
+                return;
             const value = map[input.dataset.set];
             input.value = value === undefined || value === null ? '' : String(value);
         });
+    }
+    /** 坐标世界书 / 态势注入的开关回填 */
+    fillGeoSettings() {
+        const pane = this.panes.get('settings');
+        const geo = this.data.settings?.geoContext;
+        const book = this.data.settings?.coordBook;
+        const values = {
+            coordEnabled: Boolean(book?.enabled),
+            coordTier4: book?.includeTier4 !== false,
+            coordMovementOn: book?.movementRulesEnabled !== false,
+            coordNarrativeOn: book?.narrativeRulesEnabled !== false,
+            geoEnabled: geo?.enabled !== false,
+            geoBounds: geo?.enforceBounds !== false,
+            geoJump: geo?.jumpNotice !== false,
+        };
+        pane.querySelectorAll('[data-gset]').forEach(input => {
+            const value = values[input.dataset.gset];
+            if (typeof value === 'boolean')
+                input.checked = value;
+        });
+        const movement = pane.querySelector('[data-gset-text=movementRules]');
+        if (movement && document.activeElement !== movement)
+            movement.value = book?.movementRules ?? '';
+        const narrative = pane.querySelector('[data-gset-text=narrativeRules]');
+        if (narrative && document.activeElement !== narrative)
+            narrative.value = book?.narrativeRules ?? '';
+    }
+    /** 规则文本框保存：读当前 coordBook 全量、只覆盖指定字段（两个文本框互不覆盖、不冲掉复选框） */
+    saveCoordBookField(field, value, savedHint) {
+        const book = this.data.settings?.coordBook;
+        this.actions.onSaveSettings({
+            coordBook: {
+                enabled: Boolean(book?.enabled),
+                includeTier4: book?.includeTier4 !== false,
+                excludeTrailPlaces: book?.excludeTrailPlaces === true,
+                maxEntries: book?.maxEntries ?? 200,
+                movementRulesEnabled: book?.movementRulesEnabled !== false,
+                narrativeRulesEnabled: book?.narrativeRulesEnabled !== false,
+                movementRules: book?.movementRules ?? '',
+                narrativeRules: book?.narrativeRules ?? '',
+                [field]: value,
+            },
+        });
+        const hint = this.panes.get('settings').querySelector('[data-role=geo-hint]');
+        if (hint) {
+            hint.textContent = value.trim() ? `已保存。${savedHint}` : '已保存为空文本：下次同步会移除对应的规则条目（想保留文本只停用，请取消上面那个勾）。';
+        }
+    }
+    /** 开关即时保存（不用再去点「保存设置」）；数量类参数沿用当前值 */
+    collectGeoSettings() {
+        const pane = this.panes.get('settings');
+        const checked = (key) => Boolean(pane.querySelector(`[data-gset=${key}]`)?.checked);
+        const text = (key) => pane.querySelector(`[data-gset-text=${key}]`)?.value ?? this.data.settings?.coordBook?.[key] ?? '';
+        this.actions.onSaveSettings({
+            coordBook: {
+                enabled: checked('coordEnabled'),
+                includeTier4: checked('coordTier4'),
+                excludeTrailPlaces: this.data.settings?.coordBook?.excludeTrailPlaces === true,
+                maxEntries: this.data.settings?.coordBook?.maxEntries ?? 200,
+                movementRulesEnabled: checked('coordMovementOn'),
+                narrativeRulesEnabled: checked('coordNarrativeOn'),
+                movementRules: text('movementRules'),
+                narrativeRules: text('narrativeRules'),
+            },
+            geoContext: {
+                enabled: checked('geoEnabled'),
+                depth: this.data.settings?.geoContext?.depth ?? 1,
+                role: this.data.settings?.geoContext?.role ?? 'system',
+                nearbyCount: this.data.settings?.geoContext?.nearbyCount ?? 6,
+                enforceBounds: checked('geoBounds'),
+                jumpNotice: checked('geoJump'),
+            },
+        });
+        const hint = pane.querySelector('[data-role=geo-hint]');
+        if (hint)
+            hint.textContent = '已保存。挂载状态下底图变更会自动同步进世界书；态势开关下一轮生成生效。';
     }
     /** 把模型列表填进下拉框；选中下拉里的一项就会直接替换「模型」输入框，不用手打 */
     fillModels(models) {
@@ -3634,9 +5139,10 @@ class MapWindow {
             this.fillModels(models);
             if (button)
                 button.textContent = `已获取 ${models.length} 个`;
-            this.showReport(`【获取模型列表】成功\n接口：${base}\n共 ${models.length} 个：\n` +
+            this.showApiResult(`【获取模型列表】成功\n接口：${base}\n共 ${models.length} 个：\n` +
                 models.map(id => `  · ${id}`).join('\n') +
-                `\n\n选一个（下拉框或「自定义」框）再点「保存设置」。`, '已拉到模型列表，下拉里点一下就能替换模型名。');
+                `\n\n选一个（下拉框或「自定义」框）再点「保存设置」。`);
+            toast('success', `已获取 ${models.length} 个模型，结果在按钮下方`);
         }
         catch (error) {
             const message = String(error instanceof Error ? error.message : error);
@@ -3649,7 +5155,8 @@ class MapWindow {
             catch {
                 detail = '';
             }
-            this.showReport(`【获取模型列表】失败\n接口：${base || '(未填写)'}\n密钥：${key ? '已填写' : '(空)'}\n原因：${message}${detail}\n`, `获取模型列表失败：${message}${detail}`);
+            this.showApiResult(`【获取模型列表】失败\n接口：${base || '(未填写)'}\n密钥：${key ? '已填写' : '(空)'}\n原因：${message}${detail}\n`);
+            toast('error', `获取模型列表失败：${message.slice(0, 60)}${detail}`);
         }
         finally {
             if (button) {
@@ -3706,12 +5213,15 @@ class MapWindow {
                 temperature: Number(read('temperature')) || 0,
             },
             presetUrl: read('presetUrl').trim(),
+            layoutSupplement: read('layoutSupplement'),
         });
     }
     bindChrome() {
         const bar = this.root.querySelector('.dym-titlebar');
+        // 标题栏按钮里是 SVG 图标：点击目标可能是 <svg>/<path>，必须用 closest 找到带 data-act 的按钮
+        const actOf = (target) => target?.closest?.('[data-act]')?.dataset?.act;
         bar.addEventListener('click', event => {
-            const act = event.target.dataset?.act;
+            const act = actOf(event.target);
             if (act === 'drawer')
                 this.toggleDrawer();
             else if (act === 'locate')
@@ -3723,11 +5233,11 @@ class MapWindow {
         });
         this.root.querySelector('[data-act=zoom-in]')?.addEventListener('click', () => this.data.canvas.zoomBy(1.25));
         this.root.querySelector('[data-act=zoom-out]')?.addEventListener('click', () => this.data.canvas.zoomBy(1 / 1.25));
-        this.launcher.addEventListener('click', () => this.open());
         // 拖动标题栏（贴边窄条状态下拖动 = 从边上拖出来）
         let dragging = null;
         bar.addEventListener('pointerdown', event => {
-            if (event.target.dataset?.act)
+            // 点在按钮（含其内部 SVG）上时不启动拖拽，否则 setPointerCapture 会把 click 吃掉
+            if (actOf(event.target))
                 return;
             dragging = {
                 x: event.clientX,
@@ -3910,8 +5420,10 @@ class MapWindow {
             tab: this.currentTab,
             docked: rail ? this.dockSide : null,
         });
+        // 键名与 store.ts 的 LOCAL_PREFIX + 'layout' 对齐：之前写成 worldmap_local_layout，
+        // 读的却是 worldmap_map_local_layout，布局（位置/尺寸/页签）从来没被真正恢复过。
         try {
-            localStorage.setItem('worldmap_local_layout', JSON.stringify(this.data.layout));
+            localStorage.setItem('worldmap_map_local_layout', JSON.stringify(this.data.layout));
         }
         catch {
             /* 忽略 */
@@ -3958,13 +5470,13 @@ class MapWindow {
         const off = force === undefined ? !this.root.classList.contains('dym-drawer-off') : force;
         this.root.classList.toggle('dym-drawer-off', off);
         this.data.layout.drawerOpen = !off;
-        this.drawerHandle.textContent = off ? '‹' : '›';
+        this.drawerHandle.innerHTML = svgIcon(off ? UI.chevLeft : UI.chevRight, 12);
         this.drawerHandle.title = off ? '展开右侧栏' : '收起右侧栏';
         const barButton = this.root.querySelector('[data-act=drawer]');
         if (barButton) {
-            barButton.textContent = off ? '«' : '»';
-            barButton.title = off ? '展开右侧栏' : '收起右侧栏';
+            barButton.innerHTML = svgIcon(UI.panelRight, 15);
             barButton.classList.toggle('dym-on', off);
+            barButton.title = off ? '展开右侧栏' : '收起右侧栏';
         }
         this.persistLayout();
         requestAnimationFrame(() => this.data.canvas.render());
@@ -3972,15 +5484,11 @@ class MapWindow {
     close() {
         this.exitRail();
         this.root.style.display = 'none';
-        this.launcher.style.display = 'flex';
-        const width = Math.max(320, this.root.offsetWidth || 620);
-        this.launcher.style.left = `${Math.max(4, this.host.innerWidth - width - 48)}px`;
-        this.launcher.style.top = `${Math.max(4, this.root.offsetTop + 40)}px`;
+        // 不做悬浮球：关掉就是关掉，重新打开走快捷回复栏的「世界舆图」按钮
         this.data.layout = { ...this.data.layout, collapsed: false };
     }
     open() {
         this.root.style.display = 'flex';
-        this.launcher.style.display = 'none';
         requestAnimationFrame(() => this.data.canvas.render());
     }
     isOpen() {
@@ -4024,12 +5532,16 @@ class MapWindow {
         const nameInput = edit.querySelector('[data-role=node-name]');
         const xInput = edit.querySelector('[data-role=node-x]');
         const yInput = edit.querySelector('[data-role=node-y]');
+        const tierSelect = edit.querySelector('[data-role=node-tier]');
         if (document.activeElement !== nameInput)
             nameInput.value = selected?.name ?? '';
         if (document.activeElement !== xInput)
             xInput.value = selected ? String(selected.xy[0]) : '';
         if (document.activeElement !== yInput)
             yInput.value = selected ? String(selected.xy[1]) : '';
+        if (tierSelect && document.activeElement !== tierSelect)
+            tierSelect.value = selected?.tier ? String(selected.tier) : '';
+        tierSelect.disabled = !selected;
         const editToggle = edit.querySelector('[data-role=edit-mode]');
         editToggle.checked = this.data.editMode;
         edit.querySelector('[data-act=undo]').disabled = !this.data.canUndo;
@@ -4044,16 +5556,21 @@ class MapWindow {
                     : '当前画的是全部层级（城中细节也连线，容易糊成一团）。')
             : '还没有轨迹。装好提示词后新回合会自动落点，也可以点「从聊天记录重算」。';
         const trailList = trailPane.querySelector('[data-role=trail-list]');
+        const graphView = this.data.canvas.getView().graph;
         const ordered = this.data.trail.slice().sort((a, b) => (a.seq ?? a.messageId) - (b.seq ?? b.messageId));
         trailList.innerHTML = ordered
             .reverse()
             .map(point => {
             const hidden = this.data.hiddenPointIds.has(point.id);
             const orphan = point.orphan ? '<span class="dym-tag dym-orphan" title="这一楼已不在聊天里，但轨迹保留">留</span>' : '';
+            // 节点失联：底图里已经找不到这个地点（被清空/重建/换会话 id 对不上）
+            const dead = !graphView.get(point.nodeId) && !(point.path && graphView.byPath.get(point.path))
+                ? '<span class="dym-tag dym-orphan" title="底图里已找不到该地点，轨迹线在此断开；重新生成底图或手补该地点即可接回">失</span>'
+                : '';
             return `<li data-point="${escapeHtml(point.id)}" style="opacity:${hidden ? 0.45 : 1}">
           <span class="dym-dot" style="background:#a3462a"></span>
           <span class="dym-name">楼${point.messageId}·${escapeHtml(point.path.split('·').slice(-2).join('·'))}</span>
-          <span class="dym-tag">${escapeHtml(point.kind)}</span>${orphan}
+          <span class="dym-tag">${escapeHtml(point.kind)}</span>${orphan}${dead}
         </li>`;
         })
             .join('');
@@ -4079,6 +5596,11 @@ class MapWindow {
         const settingsHint = this.panes.get('settings').querySelector('[data-role=settings-hint]');
         if (settingsHint)
             settingsHint.textContent = this.data.presetError ? `作者预设：${this.data.presetError}` : '';
+        const geoMount = this.panes.get('settings').querySelector('[data-role=geo-mount]');
+        if (geoMount) {
+            geoMount.textContent = this.data.geoStatus ?? '…';
+            geoMount.title = this.data.geoStatus ?? '';
+        }
         // 地点列表
         this.renderPlaceList();
         canvas.render();
@@ -4124,19 +5646,21 @@ class MapWindow {
     }
     destroy() {
         this.root.remove();
-        this.launcher.remove();
     }
 }
 //# sourceMappingURL=window.js.map
 return { MapWindow };
 });
 __def("./index.js", () => {
-const { ID_PREFIX, KEY_BASE_MAP, KEY_TRAIL, migrateBaseMap } = __req('./types.js');
+const { GEO_INJECT_ID, ID_PREFIX, KEY_BASE_MAP, KEY_TRAIL, migrateBaseMap } = __req('./types.js');
 const { MapGraph, sanitizeNodes, tierOf, toBaseMap } = __req('./graph.js');
-const { rebuildTrail } = __req('./trail.js');
-const { loadBaseMap, loadLayout, loadSettings, loadTrail, saveBaseMap, saveSettings, saveTrail } = __req('./store.js');
+const { rebuildTrail, collectRawLocations } = __req('./trail.js');
+const { normalize } = __req('./path.js');
+const { isBaseMapNode, isTrailLayerNode, loadBaseMap, loadLayout, loadSettings, loadTrail, saveBaseMap, saveSettings, saveTrail } = __req('./store.js');
 const { resolveInitialBaseMap, fetchPresetMap, mergeBaseMaps, seedBaseMap } = __req('./preset.js');
-const { runLayout } = __req('./layout-ai.js');
+const { runLayout, buildHistoryPrompt, parseHistoryReply, requestLayout } = __req('./layout-ai.js');
+const { attachCoordBook, deleteCoordBook, detachCoordBook, readCoordMountState, syncCoordBook } = __req('./geo-book.js');
+const { buildGeoContext } = __req('./geo-context.js');
 const { MapCanvas, defaultView } = __req('./ui/canvas.js');
 const { MapWindow } = __req('./ui/window.js');
 const BUTTON_NAME = '世界舆图';
@@ -4160,6 +5684,11 @@ let refreshTimer = null;
 let saveTimer = null;
 const undoStack = [];
 const redoStack = [];
+// ── 坐标世界书 / 地理态势（二期）状态 ──
+let geoStatus = '未挂载';
+let geoSyncTimer = null;
+let geoBookBusy = false;
+let geoInjected = false;
 // ── 工具 ────────────────────────────────────────────────────────────────
 function toast(kind, message) {
     try {
@@ -4174,7 +5703,12 @@ function toast(kind, message) {
     }
 }
 function snapshot() {
-    return JSON.stringify({ nodes: graph.toArray(), hidden: base.hiddenIds });
+    // 撤销快照按层分开存：底图点与轨迹点各自回到当时的位置（两层边界以 isBaseMapNode 为准）
+    return JSON.stringify({
+        base: graph.toArray().filter(isBaseMapNode),
+        trail: graph.toArray().filter(isTrailLayerNode),
+        hidden: base.hiddenIds,
+    });
 }
 function pushUndo() {
     undoStack.push(snapshot());
@@ -4184,10 +5718,14 @@ function pushUndo() {
 }
 function restore(json) {
     const parsed = JSON.parse(json);
-    graph = new MapGraph(parsed.nodes);
+    // 兼容旧版快照（只有 nodes 一个数组的形状）
+    const baseNodes = parsed.base ?? (parsed.nodes ?? []).filter(isBaseMapNode);
+    const trailNodes = parsed.trail ?? (parsed.base ? [] : (parsed.nodes ?? []).filter(isTrailLayerNode));
+    graph = new MapGraph([...baseNodes, ...trailNodes]);
     base.hiddenIds = parsed.hidden ?? [];
     syncSelection();
     persistBaseMap();
+    persistTrail();
     render();
 }
 function syncSelection() {
@@ -4211,6 +5749,8 @@ function sanitizeGraph(reason) {
         parts.push(`去掉 ${report.removedBearing} 个方位节点`);
     if (report.removedImmortal)
         parts.push(`去掉 ${report.removedImmortal} 个仙界节点`);
+    if (report.removedJunk)
+        parts.push(`清掉 ${report.removedJunk} 个垃圾名节点`);
     if (report.merged)
         parts.push(`合并 ${report.merged} 个重复点`);
     status = `底图已清理：${parts.join('、')}`;
@@ -4226,7 +5766,8 @@ function writeBackup() {
     }
 }
 function persistBaseMap(immediate = false) {
-    base.nodes = graph.toArray().sort((a, b) => a.depth - b.depth || a.path.localeCompare(b.path, 'zh'));
+    // 底图只存「设定 + 人工确认」层；轨迹层节点由 persistTrail 存进聊天变量
+    base.nodes = graph.toArray().filter(isBaseMapNode).sort((a, b) => a.depth - b.depth || a.path.localeCompare(b.path, 'zh'));
     base.updatedAt = new Date().toISOString();
     if (saveTimer)
         window.clearTimeout(saveTimer);
@@ -4234,16 +5775,25 @@ function persistBaseMap(immediate = false) {
         saveTimer = null;
         saveBaseMap(base);
         writeBackup();
+        scheduleGeoSync();
         return;
     }
     saveTimer = window.setTimeout(() => {
         saveTimer = null;
         saveBaseMap(base);
         writeBackup();
+        scheduleGeoSync();
     }, 600);
 }
 function persistTrail() {
+    // 轨迹层节点（聊天里自动落点的地点）跟着轨迹存进聊天变量
+    trail.nodes = graph.toArray().filter(isTrailLayerNode);
     saveTrail(trail);
+}
+/** 用「底图层 + 当前轨迹层」重建合成树（换会话 / 导入 / 恢复骨架后调用） */
+function recomposeGraph() {
+    graph = new MapGraph([...base.nodes.filter(isBaseMapNode), ...(trail.nodes ?? [])]);
+    syncSelection();
 }
 function download(filename, content) {
     try {
@@ -4290,7 +5840,8 @@ function refreshTrail() {
     try {
         const lastId = getLastMessageId();
         if (lastId < 0) {
-            trail = { schemaVersion: 1, points: [], hiddenPointIds: trail?.hiddenPointIds ?? [] };
+            trail = { schemaVersion: 1, points: [], hiddenPointIds: trail?.hiddenPointIds ?? [], nodes: [] };
+            persistTrail();
             render();
             return;
         }
@@ -4304,6 +5855,7 @@ function refreshTrail() {
             graph,
             hiddenPointIds: [...(trail?.hiddenPointIds ?? [])],
             previous: trail,
+            pathFixes: trail?.pathFixes,
         });
         trail = result.trail;
         let dirty = result.createdNodes > 0;
@@ -4329,6 +5881,8 @@ function refreshTrail() {
         persistTrail();
         status = `节点 ${graph.size} 个｜轨迹 ${trail.points.length} 点${result.orphanCount ? `（含 ${result.orphanCount} 个存档已删楼层）` : ''}`;
         render();
+        // 位置变了 → 态势块内容跟着变（uninject + inject 覆盖式重注）
+        refreshGeoInjection();
     }
     catch (error) {
         toast('error', `重建轨迹失败：${String(error)}`);
@@ -4380,6 +5934,7 @@ function render() {
         canRedo: redoStack.length > 0,
         timelineIndex,
         presetError,
+        geoStatus,
     });
 }
 // ── 生成报告：让用户看得见"到底生成了什么" ──────────────────────────────
@@ -4411,6 +5966,114 @@ function buildLayoutReport(scopeLabel, outcome) {
     lines.push('—— 模型原始回复 ——');
     lines.push(rawReply.trim() || '(空)');
     return lines.join('\n');
+}
+// ── 坐标世界书与地理态势（二期）─────────────────────────────────────────
+function describeGeoMount() {
+    const state = readCoordMountState();
+    if (state.isPrimary)
+        return '异常：坐标书成了主世界书';
+    // 只报告《世界舆图·坐标表》自己的挂载状态 —— 别的 DLC 挂了几本附加书与玩家无关，
+    // 之前写「附加书 N 本」会把别人的书数进来，让人误以为本书已挂载（或没挂上）。
+    if (state.mounted)
+        return '已挂载';
+    return '未挂载';
+}
+function geoSyncOptions() {
+    return {
+        includeTier4: settings.coordBook.includeTier4,
+        maxEntries: settings.coordBook.maxEntries,
+        hiddenIds: [...base.hiddenIds],
+        excludeTrailPlaces: settings.coordBook.excludeTrailPlaces === true,
+        // 关掉开关 = 保留文本但不写进书（传空串，geo-book 侧非空才生成条目）
+        movementRules: settings.coordBook.movementRulesEnabled === false ? '' : settings.coordBook.movementRules ?? '',
+        narrativeRules: settings.coordBook.narrativeRulesEnabled === false ? '' : settings.coordBook.narrativeRules ?? '',
+    };
+}
+/** 底图 → 世界书 的单向同步。manual=false 时（自动）只写控制台与状态栏，不弹报告 */
+async function runGeoSync(manual) {
+    if (geoBookBusy)
+        return;
+    geoBookBusy = true;
+    if (manual) {
+        busy = '正在同步坐标世界书…';
+        render();
+    }
+    try {
+        const report = await syncCoordBook(graph, geoSyncOptions());
+        geoStatus = `${describeGeoMount()}｜${report.message}`;
+        const failed = report.status === 'refused' || report.status === 'failed' || report.status === 'missing-api';
+        if (manual) {
+            toast(failed ? 'warning' : 'success', `坐标世界书：${report.message}`);
+            mapWindow?.showReport(`【坐标世界书同步】${report.status}\n${report.message}\n条目数：${report.entryCount}\n挂载状态：${describeGeoMount()}`, failed ? '同步被拒或缺接口，详见上方报告。' : '同步完成；挂载后正文提到地名才会注入对应坐标条目。');
+        }
+        else {
+            window.console.info('[世界舆图] 坐标世界书自动同步：', report.message);
+        }
+    }
+    catch (error) {
+        const message = String(error instanceof Error ? error.message : error);
+        geoStatus = `${describeGeoMount()}｜同步失败`;
+        if (manual) {
+            toast('error', `同步坐标世界书失败：${message}`);
+            mapWindow?.showReport(`【坐标世界书同步】失败\n${message}\n`, `同步失败：${message}`);
+        }
+        else {
+            window.console.warn('[世界舆图] 坐标世界书自动同步失败', error);
+        }
+    }
+    finally {
+        geoBookBusy = false;
+        if (manual)
+            busy = null;
+        render();
+    }
+}
+/** 底图变更后 2 秒去抖同步（设置里开了才生效；挂载与否则不影响内容同步） */
+function scheduleGeoSync() {
+    if (!settings?.coordBook?.enabled)
+        return;
+    if (geoSyncTimer)
+        window.clearTimeout(geoSyncTimer);
+    geoSyncTimer = window.setTimeout(() => {
+        geoSyncTimer = null;
+        void runGeoSync(false);
+    }, 2000);
+}
+/** [地理态势] 注入：uninject + inject 覆盖式重注，内容每次现算；失败只记日志，绝不影响正文生成 */
+function refreshGeoInjection() {
+    try {
+        const enabled = Boolean(settings?.geoContext?.enabled);
+        const result = enabled
+            ? buildGeoContext({
+                graph,
+                points: trail.points,
+                nearbyCount: settings.geoContext.nearbyCount,
+                enforceBounds: settings.geoContext.enforceBounds,
+                jumpNotice: settings.geoContext.jumpNotice,
+                hiddenIds: [...base.hiddenIds],
+            })
+            : null;
+        if (!result) {
+            if (geoInjected) {
+                uninjectPrompts([GEO_INJECT_ID]);
+                geoInjected = false;
+            }
+            return;
+        }
+        const depth = Math.max(0, Math.min(8, Math.round(settings.geoContext.depth || 0)));
+        uninjectPrompts([GEO_INJECT_ID]);
+        injectPrompts([{ id: GEO_INJECT_ID, position: 'in_chat', depth, role: settings.geoContext.role, content: result.content }], { once: false });
+        geoInjected = true;
+    }
+    catch (error) {
+        window.console.warn('[世界舆图] 注入地理态势失败', error);
+    }
+}
+/** 生成前事件：注入只对当前聊天有效，所以每次生成前重注一遍（顺带保证内容最新） */
+function onGenerationAfterCommands(_type, _option, dryRun) {
+    if (dryRun)
+        return;
+    refreshGeoInjection();
 }
 // ── 动作 ────────────────────────────────────────────────────────────────
 const actions = {
@@ -4554,6 +6217,26 @@ const actions = {
         render();
         toast('info', node.locked ? '已锁定，AI 不会再改它' : '已解锁');
     },
+    /** 手动指定显示层级（1~5）；null = 恢复按类型自动推导。影响显示分级与坐标书收录范围 */
+    onSetNodeTier(id, tier) {
+        const node = graph.get(id);
+        if (!node)
+            return;
+        pushUndo();
+        const mutable = node;
+        if (tier == null) {
+            delete mutable.tier;
+            toast('info', '已恢复按类型自动分层');
+        }
+        else {
+            mutable.tier = Math.max(1, Math.min(5, Math.round(tier)));
+            if (node.status === 'unplaced')
+                node.status = 'ok';
+            toast('info', `「${node.name}」已设为层级 ${mutable.tier}`);
+        }
+        persistBaseMap();
+        render();
+    },
     onScatterUnplaced() {
         pushUndo();
         const moved = graph.scatterUnplaced();
@@ -4601,6 +6284,12 @@ const actions = {
         saveSettings(settings);
         render();
         toast('success', '设置已保存');
+        // 态势开关即时生效：关掉就撤掉已注入的块；打开（或改参数）立刻按新参数重算
+        if (patch.geoContext)
+            refreshGeoInjection();
+        // 打开自动同步后立刻补一次（若此前书没建，这次会建出来；挂载仍需手动点）
+        if (patch.coordBook?.enabled)
+            scheduleGeoSync();
     },
     async onTestApi() {
         if (busy)
@@ -4637,14 +6326,14 @@ const actions = {
             mapWindow?.fillModels(models);
             const head = models.slice(0, 4).join('、');
             toast('success', `连接正常（${ms}ms）：共 ${models.length} 个模型，如 ${head}${models.length > 4 ? ' …' : ''}`);
-            mapWindow?.showReport(`【测试连接】成功\n接口：${base}\n耗时：${ms}ms\n模型：${models.length} 个\n` +
+            mapWindow?.showApiResult(`【测试连接】成功\n接口：${base}\n耗时：${ms}ms\n模型：${models.length} 个\n` +
                 models.map(id => `  · ${id}`).join('\n') +
-                `\n当前选用：${settings.api.model || '(未设置)'}`, '连接测试通过；模型下拉已填好，选一个再点「保存设置」即可。');
+                `\n当前选用：${settings.api.model || '(未设置)'}`);
         }
         catch (error) {
             const message = String(error instanceof Error ? error.message : error);
             toast('error', `连接失败：${message}`);
-            mapWindow?.showReport(`【测试连接】失败\n接口：${settings.api.url || '(未填写)'}\n密钥：${settings.api.key ? '已填写' : '(空)'}\n原因：${message}\n`, `连接失败：${message}`);
+            mapWindow?.showApiResult(`【测试连接】失败\n接口：${settings.api.url || '(未填写)'}\n密钥：${settings.api.key ? '已填写' : '(空)'}\n原因：${message}\n`);
         }
         finally {
             busy = null;
@@ -4697,7 +6386,7 @@ const actions = {
                 throw new Error('预设为空');
             pushUndo();
             const report = mergeBaseMaps(base, preset, { source: 'preset' });
-            graph = new MapGraph(base.nodes);
+            recomposeGraph();
             presetError = undefined;
             persistBaseMap(true);
             syncStatus('作者预设已合并');
@@ -4716,15 +6405,17 @@ const actions = {
     onResetBaseMap() {
         pushUndo();
         base = seedBaseMap();
-        graph = new MapGraph(base.nodes);
+        // 只重置底图层；当前会话的轨迹层原样保留（轨迹数据不受影响）
+        recomposeGraph();
         selectedId = null;
         focusId = null;
         persistBaseMap(true);
+        persistTrail();
         syncStatus('已恢复内置骨架');
         render();
         toast('success', '已恢复内置世界骨架');
     },
-    /** 清空地图上所有地点（轨迹数据不动），两步确认 + 可撤销 */
+    /** 清空底图层（轨迹层随后按聊天记录重建），两步确认 + 可撤销 */
     onClearNodes() {
         const count = graph.size;
         if (!count) {
@@ -4738,8 +6429,9 @@ const actions = {
         focusId = null;
         persistBaseMap(true);
         syncStatus('地图已清空（轨迹保留，可撤销）');
-        render();
-        toast('success', `已清空 ${count} 个地点（可撤销）。轨迹还在，下一回合会按正文重新落点。`);
+        // 当前会话的轨迹层马上按聊天记录重建回来 —— 轨迹线不断，清理的只有设定层
+        refreshTrail();
+        toast('success', `已清空 ${count} 个地点（可撤销）。设定层已清；当前会话的轨迹点已重建。`);
     },
     onExportBaseMap() {
         persistBaseMap(true);
@@ -4748,6 +6440,181 @@ const actions = {
     /** 导出「地名(坐标)｜…」锚点文本：可以直接替换提示词里的固定锚点段 */
     onExportAnchorText() {
         return buildAnchorText(graph);
+    },
+    /** 生成并挂载坐标世界书（用户显式点击 = 显式授权动绑定） */
+    async onMountCoordBook() {
+        if (busy)
+            return;
+        busy = '正在生成并挂载坐标世界书…';
+        render();
+        try {
+            const report = await syncCoordBook(graph, geoSyncOptions());
+            if (report.status === 'refused' || report.status === 'failed' || report.status === 'missing-api') {
+                throw new Error(report.message);
+            }
+            const mount = readCoordMountState();
+            if (mount.isPrimary)
+                throw new Error('「世界舆图·坐标表」是主世界书，不能作为附加书挂载');
+            if (!mount.caps.canAttach) {
+                geoStatus = `未挂载｜${report.message}`;
+                throw new Error(`世界书已生成（${report.entryCount} 条），但缺少绑定接口：${mount.caps.notes.join('；')}`);
+            }
+            if (!mount.mounted)
+                await attachCoordBook();
+            geoStatus = `${describeGeoMount()}｜${report.message}`;
+            toast('success', `坐标世界书已就绪并挂载（${report.entryCount} 条）`);
+            mapWindow?.showReport(`【挂载坐标世界书】完成\n${report.message}\n挂载状态：${describeGeoMount()}\n\n` +
+                '· 绿灯条目：正文提到地名才注入该地坐标（不提不花 token）\n' +
+                '· 每回合另有「地理态势」注入（本页可关）\n' +
+                '· 之后拖动/生成底图会自动同步进世界书（单向：底图 → 世界书）', '挂载完成；世界书侧手改的坐标会在下次同步被底图覆盖。');
+        }
+        catch (error) {
+            const message = String(error instanceof Error ? error.message : error);
+            geoStatus = `${describeGeoMount()}｜挂载失败`;
+            toast('error', `挂载坐标世界书失败：${message}`);
+            mapWindow?.showReport(`【挂载坐标世界书】失败\n${message}\n`, `挂载失败：${message}`);
+        }
+        finally {
+            busy = null;
+            render();
+        }
+    },
+    /** 修复挂载（重新挂）：不碰书内容，只把绑定重写一遍并读回校验 —— 书已同步却显示「未挂载」时点它 */
+    async onRemountCoordBook() {
+        if (busy)
+            return;
+        busy = '正在修复挂载…';
+        render();
+        try {
+            const before = readCoordMountState();
+            if (before.isPrimary)
+                throw new Error('「世界舆图·坐标表」是主世界书，不能作为附加书挂载');
+            if (!before.caps.canAttach)
+                throw new Error(`缺少角色卡绑定接口：${before.caps.notes.join('；')}`);
+            const wasMounted = before.mounted;
+            await attachCoordBook();
+            geoStatus = `${describeGeoMount()}｜${wasMounted ? '绑定已重写并校验通过' : '已补挂'}`;
+            toast('success', wasMounted ? '挂载状态已修复（绑定重写并读回校验）' : '已重新挂载坐标世界书');
+            mapWindow?.showReport(`【修复挂载】完成\n${wasMounted ? '原绑定已存在，已重写并读回校验' : '此前未挂载，现已补挂'}\n` +
+                `挂载状态：${describeGeoMount()}\n`, '修复完成；下一回合生成时坐标条目即可被扫描到。');
+        }
+        catch (error) {
+            const message = String(error instanceof Error ? error.message : error);
+            geoStatus = `${describeGeoMount()}｜修复挂载失败`;
+            toast('error', `修复挂载失败：${message}`);
+            mapWindow?.showReport(`【修复挂载】失败\n${message}\n`, `修复失败：${message}`);
+        }
+        finally {
+            busy = null;
+            render();
+        }
+    },
+    /** 卸载 = 只解除绑定，书文件保留（可再次挂载） */
+    onUnmountCoordBook() {
+        detachCoordBook()
+            .then(() => {
+            geoStatus = `${describeGeoMount()}｜已解除绑定（书仍保留）`;
+            toast('success', '已卸载坐标世界书（书文件保留，可再次挂载）');
+            render();
+        })
+            .catch((error) => {
+            toast('error', `卸载失败：${String(error instanceof Error ? error.message : error)}`);
+        });
+    },
+    /** 删除 = 解绑 + 删书（两步确认在设置页按钮上） */
+    async onDeleteCoordBook() {
+        if (busy)
+            return;
+        busy = '正在删除坐标世界书…';
+        render();
+        try {
+            const message = await deleteCoordBook();
+            geoStatus = describeGeoMount();
+            toast('success', message);
+            mapWindow?.showReport(`【删除坐标世界书】${message}\n`, message);
+        }
+        catch (error) {
+            const message = String(error instanceof Error ? error.message : error);
+            toast('error', `删除失败：${message}`);
+            mapWindow?.showReport(`【删除坐标世界书】失败\n${message}\n`, `删除失败：${message}`);
+        }
+        finally {
+            busy = null;
+            render();
+        }
+    },
+    onSyncCoordBook() {
+        void runGeoSync(true);
+    },
+    /**
+     * AI 整理本会话地点（聊天中途装插件的一次性补救）：
+     * 把本会话出现过的原始地点串（混描述/时刻/拼层级的那种）发给模型，
+     * 规范化成干净层级路径（非设定地点顺带给相对坐标），写进 trail.pathFixes 并重建轨迹。
+     */
+    async onAiFixHistory() {
+        if (busy)
+            return;
+        busy = '正在用 AI 整理本会话地点…';
+        render();
+        try {
+            const lastId = getLastMessageId();
+            if (lastId < 0)
+                throw new Error('这个会话还没有任何消息');
+            const messages = getChatMessages(`0-${lastId}`).map(message => ({
+                message: String(message?.message ?? ''),
+                is_user: Boolean(message?.is_user),
+                swipe_id: Number(message?.swipe_id ?? 0),
+            }));
+            const raws = collectRawLocations(messages);
+            if (!raws.length) {
+                throw new Error('没有收集到任何「当前地点」记录——这个会话可能还没玩到有地点的楼层');
+            }
+            const knownPaths = graph.toArray().filter(isBaseMapNode).map(node => node.path);
+            const prompt = buildHistoryPrompt(raws, knownPaths);
+            const { text } = await requestLayout(settings, prompt);
+            const fixes = parseHistoryReply(text, new Set(raws));
+            if (!fixes.length) {
+                throw new Error('模型返回的内容解析不出任何整理结果（可再点一次，或换个听话的模型）');
+            }
+            const fixesMap = {};
+            for (const fix of fixes) {
+                fixesMap[normalize(fix.raw)] = {
+                    path: fix.path,
+                    ...(Number.isFinite(fix.x) ? { x: fix.x } : {}),
+                    ...(Number.isFinite(fix.y) ? { y: fix.y } : {}),
+                };
+            }
+            trail.pathFixes = { ...(trail.pathFixes ?? {}), ...fixesMap };
+            persistTrail();
+            refreshTrail();
+            toast('success', `已整理 ${fixes.length}/${raws.length} 条地点串，轨迹已重建`);
+            mapWindow?.showReport(`【AI 整理本会话地点】完成\n输入 ${raws.length} 条，整理出 ${fixes.length} 条：\n` +
+                fixes
+                    .map(fix => `  · ${fix.raw}\n    → ${fix.path}${Number.isFinite(fix.x) ? ` (${fix.x}, ${fix.y})` : ''}`)
+                    .join('\n') +
+                '\n\n整理结果已存进本会话的轨迹数据，之后每次重算都会套用；新的脏写法出现后再点一次即可。', '轨迹已按整理结果重建；没整理到的条目仍走脚本解析。');
+        }
+        catch (error) {
+            const message = String(error instanceof Error ? error.message : error);
+            toast('error', `整理失败：${message}`);
+            mapWindow?.showReport(`【AI 整理本会话地点】失败\n${message}\n`, `整理失败：${message}`);
+        }
+        finally {
+            busy = null;
+            render();
+        }
+    },
+    /** 本回合态势预览（写进「导出/导入」文本框，方便看模型会收到什么） */
+    onGeoPreview() {
+        const result = buildGeoContext({
+            graph,
+            points: trail.points,
+            nearbyCount: settings.geoContext.nearbyCount,
+            enforceBounds: settings.geoContext.enforceBounds,
+            jumpNotice: settings.geoContext.jumpNotice,
+            hiddenIds: [...base.hiddenIds],
+        });
+        return result?.content ?? '（还没有可用的当前位置：先玩一回合，或点「轨迹 → 从聊天记录重算」）';
     },
     onExportTrail() {
         download(`世界舆图轨迹-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(trail, null, 2));
@@ -4764,7 +6631,7 @@ const actions = {
                 throw new Error('缺少 nodes 数组，这看起来不是底图 JSON');
             pushUndo();
             base = migrateBaseMap({ ...parsed, hiddenIds: parsed.hiddenIds ?? [] });
-            graph = new MapGraph(base.nodes);
+            recomposeGraph();
             sanitizeGraph('导入底图后');
             persistBaseMap(true);
             syncStatus('已导入底图');
@@ -4847,9 +6714,10 @@ async function init() {
     });
     base = resolution.map;
     presetError = resolution.presetError;
-    graph = new MapGraph(base.nodes);
+    trail = loadTrail() ?? { schemaVersion: 1, points: [], hiddenPointIds: [], nodes: [] };
+    // 合成树 = 底图层（设定+人工确认）+ 当前会话的轨迹层
+    graph = new MapGraph([...base.nodes.filter(isBaseMapNode), ...(trail.nodes ?? [])]);
     sanitizeGraph('加载底图时');
-    trail = loadTrail() ?? { schemaVersion: 1, points: [], hiddenPointIds: [] };
     persistBaseMap(true);
     const wrap = hostDocument.createElement('div');
     wrap.id = `${ID_PREFIX}canvas`;
@@ -4890,11 +6758,11 @@ async function init() {
         canRedo: false,
         timelineIndex,
         presetError,
+        geoStatus,
     }, windowActions, wrap);
     hostDocument.body.appendChild(mapWindow.root);
-    hostDocument.body.appendChild(mapWindow.launcher);
-    mapWindow.launcher.style.display = 'none';
     status = `节点 ${graph.size} 个｜轨迹 ${trail.points.length} 点`;
+    geoStatus = describeGeoMount();
     render();
     canvas.fitStage();
     refreshTrail();
@@ -4912,9 +6780,15 @@ function bindEvents() {
             selectedId = null;
             focusId = null;
             timelineIndex = null;
-            trail = loadTrail() ?? { schemaVersion: 1, points: [], hiddenPointIds: [] };
+            // 轨迹层（含轨迹地点节点）跟着聊天走：换会话整个切换，底图层不动
+            trail = loadTrail() ?? { schemaVersion: 1, points: [], hiddenPointIds: [], nodes: [] };
+            recomposeGraph();
             scheduleRefresh('切换聊天');
+            // 注入只对当前聊天有效：切存档后旧的注入已失效，重注一次（内容按新轨迹现算）
+            geoStatus = describeGeoMount();
+            refreshGeoInjection();
         });
+        eventOn(tavern_events.GENERATION_AFTER_COMMANDS, onGenerationAfterCommands);
     }
     catch (error) {
         toast('error', `注册酒馆事件失败：${String(error)}`);
@@ -4950,6 +6824,14 @@ function bindEvents() {
     })();
 }
 function teardown() {
+    try {
+        // 态势注入是本插件加的 prompt，卸载时必须撤掉，不能给别的脚本留脏数据
+        uninjectPrompts([GEO_INJECT_ID]);
+        geoInjected = false;
+    }
+    catch {
+        /* 忽略 */
+    }
     try {
         eventClearAll();
     }
@@ -5016,8 +6898,22 @@ hostWindow.__worldMap = {
         render();
         return canvas?.getScale() ?? 0;
     },
-    state: () => ({ nodes: graph.size, points: trail.points.length, currentPath, keys: [KEY_BASE_MAP, KEY_TRAIL] }),
+    state: () => ({
+        nodes: graph.size,
+        points: trail.points.length,
+        baseNodes: graph.toArray().filter(isBaseMapNode).length,
+        trailNodes: graph.toArray().filter(isTrailLayerNode).length,
+        pathFixes: Object.keys(trail.pathFixes ?? {}).length,
+        currentPath,
+        keys: [KEY_BASE_MAP, KEY_TRAIL],
+    }),
     toBaseMap: () => toBaseMap(graph, base),
+    /** 二期调试：坐标世界书挂载状态 / 态势预览 / 手动触发同步 */
+    geoBook: () => ({ mount: readCoordMountState(), status: geoStatus }),
+    geoPreview: () => actions.onGeoPreview(),
+    syncGeoBook: () => runGeoSync(true),
+    /** 调试：AI 整理本会话地点（轨迹页按钮走的就是它） */
+    aiFixHistory: () => actions.onAiFixHistory(),
     /** 自检：渲染管线各环节的实际数量，供本地试验台/控制台确认 */
     diagnostics: () => {
         const visible = canvas ? canvas.getView().graph.toArray() : [];

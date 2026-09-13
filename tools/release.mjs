@@ -137,7 +137,7 @@ function bundle(entryFile) {
 
 // ── 让 transpile 先跑一遍 ───────────────────────────────────────────────
 const written = transpileDir(SRC, DIST);
-console.log(`[1/5] 转译 ${written.length} 个文件 → dist/`);
+console.log(`[1/6] 转译 ${written.length} 个文件 → dist/`);
 
 const entryPath = path.join(DIST, ENTRY_DIR, 'index.js');
 if (!fs.existsSync(entryPath)) throw new Error('找不到编译产物：' + entryPath);
@@ -146,7 +146,7 @@ const single = bundle(entryPath);
 const singlePath = path.join(DIST, ENTRY_DIR, 'index.single.js');
 fs.writeFileSync(singlePath, single, 'utf8');
 const sizeKb = (Buffer.byteLength(single, 'utf8') / 1024).toFixed(1);
-console.log(`[2/5] 单文件打包 → dist/${ENTRY_DIR}/index.single.js（${sizeKb} KB）`);
+console.log(`[2/6] 单文件打包 → dist/${ENTRY_DIR}/index.single.js（${sizeKb} KB）`);
 
 // ── 可导入酒馆的脚本 JSON ───────────────────────────────────────────────
 const scriptId = crypto.createHash('sha1').update('worldmap-trajectory-v1').digest('hex');
@@ -175,7 +175,7 @@ const scriptJson = {
 };
 const scriptPath = path.join(ROOT, 'docs', 'worldmap-script.json');
 fs.writeFileSync(scriptPath, JSON.stringify(scriptJson, null, 2), 'utf8');
-console.log(`[3/5] 导入用脚本 → docs/worldmap-script.json`);
+console.log(`[3/6] 导入用脚本 → docs/worldmap-script.json`);
 
 // ── 外链 loader 与版本清单 ──────────────────────────────────────────────
 const runtimeUrl = `${CDN}/gh/${REPO}@${REF}/dist/${ENTRY_DIR}/index.single.js`;
@@ -202,7 +202,7 @@ fs.writeFileSync(
   ),
   'utf8',
 );
-console.log(`[4/5] 外链产物 → releases/（引用 ${runtimeUrl}）`);
+console.log(`[4/6] 外链产物 → releases/（引用 ${runtimeUrl}）`);
 
 // ── 作者底图 ────────────────────────────────────────────────────────────
 const seedModule = await import(pathToFileURL(path.join(DIST, ENTRY_DIR, 'seed.js')).href);
@@ -214,9 +214,19 @@ const baseMap = {
   authorNote: '只有世界书里写死了方位与距离的地点才在这里；其余交给「设置 → 生成：世界骨架」或人工拖动。',
 };
 fs.writeFileSync(path.join(ROOT, 'presets', 'worldmap-base-map.json'), JSON.stringify(baseMap, null, 2), 'utf8');
-console.log(`[5/5] 作者底图 → presets/worldmap-base-map.json（${baseMap.nodes.length} 个节点）`);
+console.log(`[5/6] 作者底图 → presets/worldmap-base-map.json（${baseMap.nodes.length} 个节点）`);
+
+// ── 坐标世界书双件套（SillyTavern 导入格式，与脚本 JSON 配对）────────────
+// 自动挂载不可用（缺接口 / 用户拒绝授权）时的回退路径：手动导入这本世界书即可，
+// 与《洛阳扩展》+《洛阳地点控制助手》那类 DLC 的用法一致。
+const geoBookModule = await import(pathToFileURL(path.join(DIST, ENTRY_DIR, 'geo-book.js')).href);
+const coordDrafts = geoBookModule.buildCoordDrafts(seedGraph, { includeTier4: true, maxEntries: 200, hiddenIds: [] });
+const coordBook = geoBookModule.toSillyTavernBook(coordDrafts);
+fs.writeFileSync(path.join(ROOT, 'presets', 'worldmap-coord-book.json'), JSON.stringify(coordBook, null, 2), 'utf8');
+console.log(`[6/6] 坐标世界书双件套 → presets/worldmap-coord-book.json（${coordDrafts.length} 条）`);
 
 console.log('\n完成。');
 console.log(`  单文件：${path.relative(ROOT, singlePath)}（${sizeKb} KB）`);
 console.log(`  导入用：${path.relative(ROOT, scriptPath)}`);
 console.log('  安装：酒馆助手 → 脚本 → 导入 docs/worldmap-script.json → 打开开关 → 点「世界舆图」按钮');
+console.log('  坐标世界书：设置页「生成并挂载」，或手动导入 presets/worldmap-coord-book.json');

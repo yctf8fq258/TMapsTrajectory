@@ -122,7 +122,12 @@ export function isBearingSegment(segment) {
         return false;
     if (BEARING_NAMES.has(text))
         return true;
-    return /^(东|南|西|北|中)(部|侧|面|方|域|境|隅)$/.test(text);
+    if (/^(东|南|西|北|中)(部|侧|面|方|域|境|隅)$/.test(text))
+        return true;
+    // 「东南方半空」「高空」「地底深处」这类方位+泛指位置的词，不是具体地点
+    if (/^((东南|西南|西北|东北|正东|正南|正西|正北|东|南|西|北|中)(部|方|侧)?(的)?)?(半空|上空|高空|深处|地底|水底|地底深处)$/.test(text))
+        return true;
+    return false;
 }
 /** 仙界相关名字：当前剧情舞台是玄天界，默认不把仙界铺进底图 */
 const IMMORTAL_REALM = /(仙域|仙界|天庭|凌霄|界碑关|时空乱流)/;
@@ -193,6 +198,8 @@ export function looksLikeDescription(segment) {
         return true;
     if (/[，。；！？、]/.test(segment))
         return true;
+    if (isTimeLikeName(segment))
+        return true;
     for (const marker of DESCRIPTION_MARKERS) {
         if (segment.includes(marker))
             return true;
@@ -201,6 +208,39 @@ export function looksLikeDescription(segment) {
         return true;
     if (/^(有|无|见|听|闻|但|而|却|且|因|遂|乃|则|其|此|那|这)/.test(segment))
         return true;
+    return false;
+}
+/** 「戌时铜灯将尽」「23点」这类时刻/更点，AI 偶尔会把它当成当前地点写进来 */
+export function isTimeLikeName(name) {
+    return /^(子|丑|寅|卯|辰|巳|午|未|申|酉|戌|亥)时/.test(name) || /^[0-9０-９]{1,3}(点|时)(半|整)?/.test(name);
+}
+/**
+ * 「整个名字就是垃圾」的强判定（供底图自动清洗用，比 looksLikeDescription 更保守）：
+ *   · 名字里带逗号/顿号 —— 地点与描述没切开（慈宁宫西暖阁,戌时铜灯将尽）；
+ *   · 空格后面跟着描述（官道西段浅谷至缓坡 官道石面阵纹稀疏）；
+ *   · 整串是个时刻（戌时铜灯已燃）；
+ *   · 名字长得离谱（≥12 字）或含典型描写词。
+ * 只对自动生成的节点清理，种子/预设/人工/锁定一律不碰。
+ */
+export function isJunkLocationName(name) {
+    const text = (name ?? '').trim();
+    if (!text)
+        return true;
+    if (/[，,、;；]/.test(text))
+        return true;
+    const spaceParts = text.split(/\s+/).filter(Boolean);
+    if (spaceParts.length >= 2 && looksLikeDescription(spaceParts[spaceParts.length - 1]))
+        return true;
+    if (isTimeLikeName(text))
+        return true;
+    if (/(之后|以前|以后)$/.test(text))
+        return true;
+    if (text.length >= 12)
+        return true;
+    for (const marker of ['明灭', '流转', '氤氲', '萦绕', '斜落', '映亮', '低垂', '漫开', '泛着', '拍打', '热气', '褪色']) {
+        if (text.includes(marker))
+            return true;
+    }
     return false;
 }
 /** 从「距神都七百亿里」这类文本里抽方向与距离，供 AI 布局时做提示（不直接决定坐标） */

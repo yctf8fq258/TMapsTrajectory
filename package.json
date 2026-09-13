@@ -16,6 +16,7 @@
     "typecheck": "node tools/typecheck.mjs",
     "selftest": "node tools/selftest.mjs",
     "sanitize-test": "node tools/sanitize-test.mjs",
+    "geo-test": "node tools/geo-book-test.mjs",
     "release": "node tools/release.mjs",
     "bundletest": "node tools/bundletest.mjs"
   },

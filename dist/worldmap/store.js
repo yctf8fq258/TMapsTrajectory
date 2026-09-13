@@ -1,4 +1,4 @@
-import { DEFAULT_LAYOUT, DEFAULT_SETTINGS, KEY_BASE_MAP, KEY_TRAIL, migrateBaseMap } from './types.js';
+import { DEFAULT_COORD_BOOK, DEFAULT_GEO_CONTEXT, DEFAULT_LAYOUT, DEFAULT_MOVEMENT_RULES, DEFAULT_NARRATIVE_RULES, DEFAULT_SETTINGS, KEY_BASE_MAP, KEY_TRAIL, LAYOUT_SUPPLEMENT_DEFAULT, migrateBaseMap } from './types.js';
 const LOCAL_PREFIX = 'worldmap_map_local_';
 function readLocal(key) {
     try {
@@ -46,6 +46,18 @@ export function writeScope(key, value, scope) {
  */
 const LEGACY_KEY_BASE_MAP = 'daoyuan_map_v1';
 const LEGACY_KEY_TRAIL = 'daoyuan_trail_v1';
+/**
+ * 两层分界：底图（角色卡变量，跨会话）只存「设定 + 人工确认」的节点；
+ * 轨迹来源且未锁定的节点属于**轨迹层**，随聊天变量走（trail.nodes）。
+ * 内存里两者合成一棵树，持久化时按这条线劈开。
+ */
+export function isBaseMapNode(node) {
+    return node.source !== 'trail' || node.locked === true;
+}
+/** 轨迹层节点（与 isBaseMapNode 互补） */
+export function isTrailLayerNode(node) {
+    return !isBaseMapNode(node);
+}
 export function loadBaseMap() {
     const map = readScope(KEY_BASE_MAP, 'character') ??
         readScope(KEY_BASE_MAP, 'chat') ??
@@ -53,32 +65,52 @@ export function loadBaseMap() {
         readScope(LEGACY_KEY_BASE_MAP, 'chat');
     if (!map || !Array.isArray(map.nodes))
         return null;
-    return migrateBaseMap(map);
+    // 底图里不允许混轨迹层节点：老版本存进来的轨迹点在读取时直接丢弃（按新架构用「从聊天记录重算」重建）
+    const cleaned = { ...map, nodes: map.nodes.filter(isBaseMapNode) };
+    return migrateBaseMap(cleaned);
 }
 export function saveBaseMap(map) {
-    const ok = writeScope(KEY_BASE_MAP, map, 'character');
+    const cleaned = { ...map, nodes: (map.nodes ?? []).filter(isBaseMapNode) };
+    const ok = writeScope(KEY_BASE_MAP, cleaned, 'character');
     if (!ok)
-        writeScope(KEY_BASE_MAP, map, 'chat');
+        writeScope(KEY_BASE_MAP, cleaned, 'chat');
     return ok;
 }
 export function loadTrail() {
     const trail = readScope(KEY_TRAIL, 'chat') ?? readScope(LEGACY_KEY_TRAIL, 'chat');
     if (!trail || !Array.isArray(trail.points))
         return null;
-    return trail;
+    return { ...trail, nodes: Array.isArray(trail.nodes) ? trail.nodes : [] };
 }
 export function saveTrail(trail) {
     writeScope(KEY_TRAIL, trail, 'chat');
 }
+/**
+ * 坐标书设置合并：老存档缺字段、或规则文本框是空串时，一律回退到**内置默认规则文本**——
+ * 用户打开设置就能看到两段规则，不需要再去文档里手动复制。
+ */
+function mergeCoordBook(stored) {
+    const merged = { ...DEFAULT_COORD_BOOK, ...(stored ?? {}) };
+    if (!merged.movementRules)
+        merged.movementRules = DEFAULT_MOVEMENT_RULES;
+    if (!merged.narrativeRules)
+        merged.narrativeRules = DEFAULT_NARRATIVE_RULES;
+    return merged;
+}
 export function loadSettings() {
     const stored = readScope('settings', 'script') ?? readScope('settings', 'global');
     if (!stored)
-        return { ...DEFAULT_SETTINGS, api: { ...DEFAULT_SETTINGS.api } };
+        return { ...DEFAULT_SETTINGS, api: { ...DEFAULT_SETTINGS.api }, geoContext: { ...DEFAULT_GEO_CONTEXT }, coordBook: mergeCoordBook(null) };
     return {
         ...DEFAULT_SETTINGS,
         ...stored,
         schemaVersion: 1,
         api: { ...DEFAULT_SETTINGS.api, ...(stored.api ?? {}) },
+        // 二期新字段：老存档没有这两块，用默认值补齐（缺省关自动同步、开态势注入）
+        geoContext: { ...DEFAULT_GEO_CONTEXT, ...(stored.geoContext ?? {}) },
+        coordBook: mergeCoordBook(stored.coordBook),
+        // 方位补充表：老存档没有就给内置默认；用户清空过（空串）则尊重空串
+        layoutSupplement: stored.layoutSupplement ?? LAYOUT_SUPPLEMENT_DEFAULT,
     };
 }
 export function saveSettings(settings) {
