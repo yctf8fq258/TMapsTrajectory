@@ -8,7 +8,7 @@
  * 为什么不直接用 replaceVariables：它是**整体替换**，会把「卡内手机脚本」写在
  * 角色卡变量里的 phone_data 一起抹掉。所以一律走 insertOrAssignVariables。
  */
-import type { BaseMap, CoordBookSettings, LayoutState, MapNode, MapSettings, Trail } from './types.js';
+import type { BaseMap, CoordBookSettings, LayoutState, MapApiConfig, MapNode, MapSettings, Trail } from './types.js';
 import { DEFAULT_COORD_BOOK, DEFAULT_GEO_CONTEXT, DEFAULT_LAYOUT, DEFAULT_MOVEMENT_RULES, DEFAULT_NARRATIVE_RULES, DEFAULT_SETTINGS, KEY_BASE_MAP, KEY_TRAIL, LAYOUT_SUPPLEMENT_DEFAULT, migrateBaseMap } from './types.js';
 
 export type StoreScope = 'chat' | 'character' | 'script' | 'global';
@@ -63,17 +63,18 @@ const LEGACY_KEY_BASE_MAP = 'daoyuan_map_v1';
 const LEGACY_KEY_TRAIL = 'daoyuan_trail_v1';
 
 /**
- * 两层分界：底图（角色卡变量，跨会话）只存「设定 + 人工确认」的节点；
- * 轨迹来源且未锁定的节点属于**轨迹层**，随聊天变量走（trail.nodes）。
+ * 两层分界：底图（角色卡变量，跨会话）只存「设定 + 人工新增/确认的非轨迹节点」；
+ * **所有轨迹来源的节点**（含人工拖动过、锁定的）都属于轨迹层，随聊天变量走（trail.nodes）。
+ * ——轨迹点编辑只改坐标不改来源，手调的轨迹点不会被当成设定写进底图/坐标书。
  * 内存里两者合成一棵树，持久化时按这条线劈开。
  */
 export function isBaseMapNode(node: MapNode): boolean {
-  return node.source !== 'trail' || node.locked === true;
+  return node.source !== 'trail';
 }
 
 /** 轨迹层节点（与 isBaseMapNode 互补） */
 export function isTrailLayerNode(node: MapNode): boolean {
-  return !isBaseMapNode(node);
+  return node.source === 'trail';
 }
 
 export function loadBaseMap(): BaseMap | null {
@@ -116,8 +117,30 @@ function mergeCoordBook(stored?: Partial<CoordBookSettings> | null): CoordBookSe
   return merged;
 }
 
+/** 插件设置的 localStorage 镜像键：脚本作用域会在重装/更新插件时丢，这里兜底（尤其 API KEY） */
+const LOCAL_SETTINGS_KEY = 'settings';
+
 export function loadSettings(): MapSettings {
-  const stored = readScope<Partial<MapSettings>>('settings', 'script') ?? readScope<Partial<MapSettings>>('settings', 'global');
+  const stored =
+    readScope<Partial<MapSettings>>('settings', 'script') ??
+    readScope<Partial<MapSettings>>('settings', 'global') ??
+    readLocal<Partial<MapSettings>>(LOCAL_SETTINGS_KEY);
+  // localStorage 镜像：脚本作用域里 API 配置缺了（更新插件/换安装方式）就用镜像补上
+  const mirror = readLocal<Partial<MapSettings>>(LOCAL_SETTINGS_KEY);
+  if (mirror?.api && stored) {
+    const api: MapApiConfig = { ...DEFAULT_SETTINGS.api, ...(stored.api ?? {}) };
+    for (const field of ['url', 'key', 'model'] as const) {
+      if (!String(api[field] ?? '').trim() && mirror.api[field]) api[field] = mirror.api[field];
+    }
+    stored.api = api;
+  } else if (!stored && mirror) {
+    return finalizeSettings(mirror);
+  }
+  return finalizeSettings(stored);
+}
+
+/** 应用默认值并固化（含坐标书规则文本回退） */
+function finalizeSettings(stored?: Partial<MapSettings> | null): MapSettings {
   if (!stored) return { ...DEFAULT_SETTINGS, api: { ...DEFAULT_SETTINGS.api }, geoContext: { ...DEFAULT_GEO_CONTEXT }, coordBook: mergeCoordBook(null) };
   return {
     ...DEFAULT_SETTINGS,
@@ -134,6 +157,8 @@ export function loadSettings(): MapSettings {
 
 export function saveSettings(settings: MapSettings): void {
   writeScope('settings', settings, 'script');
+  // 同步一份到 localStorage：脚本作用域在插件更新/重装后可能清空，KEY 不能跟着丢
+  writeLocal(LOCAL_SETTINGS_KEY, settings);
 }
 
 export function loadLayout(): LayoutState {

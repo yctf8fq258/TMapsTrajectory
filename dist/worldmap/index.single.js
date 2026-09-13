@@ -1438,6 +1438,8 @@ function rebuildTrail(options) {
         schemaVersion: 1,
         points,
         hiddenPointIds: options.hiddenPointIds ?? [],
+        // 规范化结果必须跟着 trail 走：否则第一次重算就把「AI 整理」冲掉，重开会话又全乱
+        pathFixes: options.pathFixes,
     };
     return { trail, createdNodes, anomalies, orphanCount };
 }
@@ -1484,9 +1486,9 @@ function collectRawLocations(messages, limit = 120) {
     }
     return out;
 }
-/** 把轨迹里连续重复的坐标合并，供画线使用 */
+/** 把轨迹里连续重复的坐标合并，供画线使用。孤儿点（楼层已不在聊天里）不参与连线与绘制 */
 function polylinePoints(points, hidden) {
-    const visible = points.filter(point => !hidden.has(point.id));
+    const visible = points.filter(point => !hidden.has(point.id) && !point.orphan);
     const result = [];
     for (const point of visible) {
         const last = result[result.length - 1];
@@ -1551,16 +1553,17 @@ function writeScope(key, value, scope) {
 const LEGACY_KEY_BASE_MAP = 'daoyuan_map_v1';
 const LEGACY_KEY_TRAIL = 'daoyuan_trail_v1';
 /**
- * 两层分界：底图（角色卡变量，跨会话）只存「设定 + 人工确认」的节点；
- * 轨迹来源且未锁定的节点属于**轨迹层**，随聊天变量走（trail.nodes）。
+ * 两层分界：底图（角色卡变量，跨会话）只存「设定 + 人工新增/确认的非轨迹节点」；
+ * **所有轨迹来源的节点**（含人工拖动过、锁定的）都属于轨迹层，随聊天变量走（trail.nodes）。
+ * ——轨迹点编辑只改坐标不改来源，手调的轨迹点不会被当成设定写进底图/坐标书。
  * 内存里两者合成一棵树，持久化时按这条线劈开。
  */
 function isBaseMapNode(node) {
-    return node.source !== 'trail' || node.locked === true;
+    return node.source !== 'trail';
 }
 /** 轨迹层节点（与 isBaseMapNode 互补） */
 function isTrailLayerNode(node) {
-    return !isBaseMapNode(node);
+    return node.source === 'trail';
 }
 function loadBaseMap() {
     const map = readScope(KEY_BASE_MAP, 'character') ??
@@ -1601,8 +1604,29 @@ function mergeCoordBook(stored) {
         merged.narrativeRules = DEFAULT_NARRATIVE_RULES;
     return merged;
 }
+/** 插件设置的 localStorage 镜像键：脚本作用域会在重装/更新插件时丢，这里兜底（尤其 API KEY） */
+const LOCAL_SETTINGS_KEY = 'settings';
 function loadSettings() {
-    const stored = readScope('settings', 'script') ?? readScope('settings', 'global');
+    const stored = readScope('settings', 'script') ??
+        readScope('settings', 'global') ??
+        readLocal(LOCAL_SETTINGS_KEY);
+    // localStorage 镜像：脚本作用域里 API 配置缺了（更新插件/换安装方式）就用镜像补上
+    const mirror = readLocal(LOCAL_SETTINGS_KEY);
+    if (mirror?.api && stored) {
+        const api = { ...DEFAULT_SETTINGS.api, ...(stored.api ?? {}) };
+        for (const field of ['url', 'key', 'model']) {
+            if (!String(api[field] ?? '').trim() && mirror.api[field])
+                api[field] = mirror.api[field];
+        }
+        stored.api = api;
+    }
+    else if (!stored && mirror) {
+        return finalizeSettings(mirror);
+    }
+    return finalizeSettings(stored);
+}
+/** 应用默认值并固化（含坐标书规则文本回退） */
+function finalizeSettings(stored) {
     if (!stored)
         return { ...DEFAULT_SETTINGS, api: { ...DEFAULT_SETTINGS.api }, geoContext: { ...DEFAULT_GEO_CONTEXT }, coordBook: mergeCoordBook(null) };
     return {
@@ -1619,6 +1643,8 @@ function loadSettings() {
 }
 function saveSettings(settings) {
     writeScope('settings', settings, 'script');
+    // 同步一份到 localStorage：脚本作用域在插件更新/重装后可能清空，KEY 不能跟着丢
+    writeLocal(LOCAL_SETTINGS_KEY, settings);
 }
 function loadLayout() {
     return { ...DEFAULT_LAYOUT, ...(readLocal('layout') ?? {}) };
@@ -3573,6 +3599,10 @@ class MapCanvas {
     connectors = [];
     drawn = [];
     childCount = new Map();
+    /** 编辑模式下的框选集合（多选的节点 id）；Shift+拖空白框选，抓住其中一点整组移动 */
+    multi = new Set();
+    /** 框选橡皮筋矩形（svg 本地屏幕坐标） */
+    rubber = null;
     /** 顶部中间的坐标条：显示当前选中点的名称 + 坐标（没选中就藏起来） */
     hud;
     constructor(wrap, hooks, view) {
@@ -4085,6 +4115,18 @@ class MapCanvas {
             });
             halo.setAttribute('stroke-width', String(1.4 / Math.max(0.3, this.scale)));
             group.appendChild(halo);
+            // 框选多选的高亮环（虚线金圈）
+            if (this.multi.has(node.id)) {
+                group.appendChild(el('circle', {
+                    cx: pos[0],
+                    cy: pos[1],
+                    r: radius * 1.75,
+                    fill: 'none',
+                    stroke: '#d9c08c',
+                    'stroke-width': 1.6 / Math.max(0.3, this.scale),
+                    'stroke-dasharray': `${4 / Math.max(0.3, this.scale)} ${3 / Math.max(0.3, this.scale)}`,
+                }));
+            }
             group.appendChild(el('circle', { cx: pos[0], cy: pos[1], r: radius * 0.72, fill: color }));
             // 宏观视角下大域只留地名（图标在这个尺度纯属噪音）；放大后再把图标带回来
             if (!(macro && tier <= 2)) {
@@ -4219,6 +4261,21 @@ class MapCanvas {
         for (const [cx, cy, r] of COMPASS.circles)
             compass.appendChild(el('circle', { cx, cy, r }));
         this.overlay.replaceChildren(compass);
+        // 框选橡皮筋（屏幕坐标，画在 overlay 层）
+        if (this.rubber) {
+            const { x0, y0, x1, y1 } = this.rubber;
+            this.overlay.appendChild(el('rect', {
+                x: Math.min(x0, x1),
+                y: Math.min(y0, y1),
+                width: Math.abs(x1 - x0),
+                height: Math.abs(y1 - y0),
+                rx: 4,
+                fill: 'rgba(217,192,140,.12)',
+                stroke: '#d9c08c',
+                'stroke-width': 1,
+                'stroke-dasharray': '5 3',
+            }));
+        }
         this.wrap.dataset.dymScale = this.scale.toFixed(2);
         this.wrap.dataset.dymNodes = String(accepted.length);
         // 顶部坐标条：只显示「当前选中的点」——名称 + 坐标（有高度再带上高度）
@@ -4235,6 +4292,35 @@ class MapCanvas {
         }
     }
     // ── 交互 ────────────────────────────────────────────────────────────
+    /** 框选结束：把橡皮筋矩形（屏幕坐标）换成世界矩形，选中范围内的已绘制节点 */
+    finishRubber() {
+        if (this.rubber) {
+            const x0 = Math.min(this.rubber.x0, this.rubber.x1);
+            const x1 = Math.max(this.rubber.x0, this.rubber.x1);
+            const y0 = Math.min(this.rubber.y0, this.rubber.y1);
+            const y1 = Math.max(this.rubber.y0, this.rubber.y1);
+            const wx0 = (x0 - this.tx) / this.scale;
+            const wx1 = (x1 - this.tx) / this.scale;
+            const wy0 = (y0 - this.ty) / this.scale;
+            const wy1 = (y1 - this.ty) / this.scale;
+            const picked = new Set();
+            for (const node of this.drawn) {
+                const pos = this.worldPos(node);
+                if (pos[0] >= wx0 && pos[0] <= wx1 && pos[1] >= wy0 && pos[1] <= wy1)
+                    picked.add(node.id);
+            }
+            this.multi = picked;
+        }
+        this.rubber = null;
+        this.render();
+    }
+    /** 清空多选（点击空白选点 / 下钻 / 全图时调用） */
+    clearMulti() {
+        if (this.multi.size) {
+            this.multi.clear();
+            this.render();
+        }
+    }
     hitTest(clientX, clientY) {
         const [wx, wy] = this.screenToWorld(clientX, clientY);
         let best = null;
@@ -4264,20 +4350,69 @@ class MapCanvas {
             if (event.button !== 0)
                 return;
             this.svg.setPointerCapture(event.pointerId);
+            const shift = event.shiftKey;
             const node = this.hitTest(event.clientX, event.clientY);
-            if (this.view.editMode && node) {
-                const pos = this.worldPos(node);
-                this.drag = {
-                    mode: 'node',
-                    id: node.id,
-                    startX: event.clientX,
-                    startY: event.clientY,
-                    originX: pos[0],
-                    originY: pos[1],
-                    moved: false,
-                };
-                this.svg.classList.add('dym-panning');
-                return;
+            if (this.view.editMode) {
+                // Shift + 空白处拖动 = 框选
+                if (shift && !node) {
+                    this.drag = {
+                        mode: 'rubber',
+                        startX: event.clientX,
+                        startY: event.clientY,
+                        originX: 0,
+                        originY: 0,
+                        moved: false,
+                    };
+                    this.svg.classList.add('dym-panning');
+                    return;
+                }
+                if (node && shift) {
+                    // Shift + 点 = 加入/移出多选（不拖动）
+                    if (this.multi.has(node.id))
+                        this.multi.delete(node.id);
+                    else
+                        this.multi.add(node.id);
+                    this.render();
+                    return;
+                }
+                if (node && !shift && this.multi.has(node.id) && this.multi.size > 1) {
+                    // 抓住多选中的点 → 整组拖动
+                    const origins = new Map();
+                    for (const id of this.multi) {
+                        const picked = this.view.graph.get(id);
+                        if (picked)
+                            origins.set(id, this.worldPos(picked));
+                    }
+                    this.drag = {
+                        mode: 'group',
+                        startX: event.clientX,
+                        startY: event.clientY,
+                        originX: 0,
+                        originY: 0,
+                        origins,
+                        moved: false,
+                    };
+                    this.svg.classList.add('dym-panning');
+                    return;
+                }
+                if (node) {
+                    if (!shift)
+                        this.multi.clear();
+                    const pos = this.worldPos(node);
+                    this.drag = {
+                        mode: 'node',
+                        id: node.id,
+                        startX: event.clientX,
+                        startY: event.clientY,
+                        originX: pos[0],
+                        originY: pos[1],
+                        moved: false,
+                    };
+                    this.svg.classList.add('dym-panning');
+                    return;
+                }
+                if (!shift)
+                    this.multi.clear();
             }
             this.drag = {
                 mode: 'pan',
@@ -4301,11 +4436,32 @@ class MapCanvas {
                 this.ty = this.drag.originY + dy;
                 this.applyTransform();
             }
-            else if (this.drag.id) {
-                const node = this.view.graph.get(this.drag.id);
+            else if (this.drag.mode === 'node') {
+                const node = this.view.graph.get(this.drag.id ?? '');
                 if (!node)
                     return;
                 node.xy = [this.drag.originX + dx / this.scale, this.drag.originY + dy / this.scale];
+                this.render();
+            }
+            else if (this.drag.mode === 'group') {
+                const wx = dx / this.scale;
+                const wy = dy / this.scale;
+                for (const [id, origin] of this.drag.origins ?? []) {
+                    const picked = this.view.graph.get(id);
+                    if (!picked)
+                        continue;
+                    picked.xy = [origin[0] + wx, origin[1] + wy];
+                }
+                this.render();
+            }
+            else if (this.drag.mode === 'rubber') {
+                const rect = this.svg.getBoundingClientRect();
+                this.rubber = {
+                    x0: this.drag.startX - rect.left,
+                    y0: this.drag.startY - rect.top,
+                    x1: event.clientX - rect.left,
+                    y1: event.clientY - rect.top,
+                };
                 this.render();
             }
         });
@@ -4321,6 +4477,23 @@ class MapCanvas {
                     this.hooks.onMoveNode(node.id, [Math.round(node.xy[0] * 100) / 100, Math.round(node.xy[1] * 100) / 100]);
                     this.suppressClick = true;
                 }
+            }
+            else if (current.mode === 'group' && current.moved) {
+                // 整组提交：一次撤销快照，逐点落坐标（来源保持不变）
+                const items = [];
+                for (const [id, origin] of current.origins ?? []) {
+                    const picked = this.view.graph.get(id);
+                    if (!picked)
+                        continue;
+                    items.push({ id, xy: [Math.round(picked.xy[0] * 100) / 100, Math.round(picked.xy[1] * 100) / 100] });
+                }
+                if (items.length) {
+                    this.suppressClick = true;
+                    this.hooks.onMoveNodes(items);
+                }
+            }
+            else if (current.mode === 'rubber') {
+                this.finishRubber();
             }
         };
         this.svg.addEventListener('pointerup', endDrag);
@@ -4636,6 +4809,7 @@ class MapWindow {
       </div>
       <div class="dym-hint">
         增点：<b>开启编辑模式后，在画布空白处右键或双击</b>即可在那里新增一个地点（会挂在当前下钻的节点下）。<br>
+        批量：<b>Shift + 拖空白处框选</b>多个点（Shift 点单点可加减），抓住其中一点拖动整组移动。<br>
         删点：选中后点上面的「删除节点」，或按 <b>Delete</b> 键（子节点会一起删）。<br>
         锁定后的节点不会被地图布局 AI 覆盖；人工拖动会自动标记为「人工」。
       </div>`;
@@ -5820,10 +5994,33 @@ function persistBaseMap(immediate = false) {
         scheduleGeoSync();
     }, 600);
 }
-function persistTrail() {
-    // 轨迹层节点（聊天里自动落点的地点）跟着轨迹存进聊天变量
+let lastTrailJson = '';
+let trailSaveTimer = null;
+/**
+ * 轨迹写聊天变量有三道闸：**内容去重**（没变化不写）→ **节流**（800ms 合并连续写）→ 才真正落库。
+ * 聊天变量每次写都会触发酒馆的存档管线，重建又跑得勤 —— 曾经把酒馆的
+ * 「保存文件时聊天完整性检查失败」弹窗刷出来过（就是那个要求键入 OVERWRITE 的）。
+ */
+function persistTrail(immediate = false) {
     trail.nodes = graph.toArray().filter(isTrailLayerNode);
-    saveTrail(trail);
+    const json = JSON.stringify(trail);
+    if (json === lastTrailJson)
+        return;
+    lastTrailJson = json;
+    if (immediate) {
+        if (trailSaveTimer) {
+            window.clearTimeout(trailSaveTimer);
+            trailSaveTimer = null;
+        }
+        saveTrail(trail);
+        return;
+    }
+    if (trailSaveTimer)
+        return;
+    trailSaveTimer = window.setTimeout(() => {
+        trailSaveTimer = null;
+        saveTrail(trail);
+    }, 800);
 }
 /** 用「底图层 + 当前轨迹层」重建合成树（换会话 / 导入 / 恢复骨架后调用） */
 function recomposeGraph() {
@@ -5875,7 +6072,13 @@ function refreshTrail() {
     try {
         const lastId = getLastMessageId();
         if (lastId < 0) {
-            trail = { schemaVersion: 1, points: [], hiddenPointIds: trail?.hiddenPointIds ?? [], nodes: [] };
+            trail = {
+                schemaVersion: 1,
+                points: [],
+                hiddenPointIds: trail?.hiddenPointIds ?? [],
+                nodes: [],
+                pathFixes: trail?.pathFixes,
+            };
             persistTrail();
             render();
             return;
@@ -6118,15 +6321,18 @@ const actions = {
     },
     onSelectNode(id) {
         selectedId = id;
+        canvas?.clearMulti();
         render();
     },
     onFocusNode(id) {
         focusId = id;
+        canvas?.clearMulti();
         canvas?.focusOn(id);
         render();
     },
     onFit() {
         focusId = null;
+        canvas?.clearMulti();
         canvas?.fit();
         render();
     },
@@ -6166,14 +6372,43 @@ const actions = {
         if (!selectedId)
             return;
         pushUndo();
-        graph.setPosition(selectedId, xy, { force: true, source: 'manual' });
+        // 只改坐标，不改来源：轨迹点拖完仍是轨迹点（留在聊天作用域），
+        // 不会被当成设定点写进底图、进而混进坐标书（用户明确要求的语义）
+        graph.setPosition(selectedId, xy, { force: true });
         const node = graph.get(selectedId);
         if (node) {
             node.locked = true;
             node.status = 'ok';
         }
         persistBaseMap();
+        persistTrail();
         render();
+    },
+    /** 框选批量拖动：一次撤销快照，逐点落坐标；来源保持不变（轨迹点仍是轨迹点） */
+    onMoveNodes(items) {
+        if (!items.length)
+            return;
+        pushUndo();
+        let moved = 0;
+        for (const item of items) {
+            if (!graph.setPosition(item.id, item.xy, { force: true }))
+                continue;
+            const node = graph.get(item.id);
+            if (node) {
+                node.locked = true;
+                node.status = 'ok';
+            }
+            moved++;
+        }
+        if (!moved) {
+            redoStack.length = 0;
+            undoStack.pop();
+            return;
+        }
+        persistBaseMap();
+        persistTrail();
+        render();
+        toast('success', `已批量移动 ${moved} 个地点`);
     },
     onRenameNode(id, name) {
         const node = graph.get(id);
@@ -6758,6 +6993,7 @@ async function init() {
             selectedId = id;
             actions.onMoveSelected(xy);
         },
+        onMoveNodes: items => actions.onMoveNodes(items),
         onEditNode: id => {
             const node = graph.get(id);
             if (node)
@@ -6810,6 +7046,11 @@ function bindEvents() {
             focusId = null;
             timelineIndex = null;
             // 轨迹层（含轨迹地点节点）跟着聊天走：换会话整个切换，底图层不动
+            if (trailSaveTimer) {
+                window.clearTimeout(trailSaveTimer);
+                trailSaveTimer = null;
+            }
+            lastTrailJson = '';
             trail = loadTrail() ?? { schemaVersion: 1, points: [], hiddenPointIds: [], nodes: [] };
             recomposeGraph();
             scheduleRefresh('切换聊天');

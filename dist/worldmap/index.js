@@ -131,10 +131,33 @@ function persistBaseMap(immediate = false) {
         scheduleGeoSync();
     }, 600);
 }
-function persistTrail() {
-    // 轨迹层节点（聊天里自动落点的地点）跟着轨迹存进聊天变量
+let lastTrailJson = '';
+let trailSaveTimer = null;
+/**
+ * 轨迹写聊天变量有三道闸：**内容去重**（没变化不写）→ **节流**（800ms 合并连续写）→ 才真正落库。
+ * 聊天变量每次写都会触发酒馆的存档管线，重建又跑得勤 —— 曾经把酒馆的
+ * 「保存文件时聊天完整性检查失败」弹窗刷出来过（就是那个要求键入 OVERWRITE 的）。
+ */
+function persistTrail(immediate = false) {
     trail.nodes = graph.toArray().filter(isTrailLayerNode);
-    saveTrail(trail);
+    const json = JSON.stringify(trail);
+    if (json === lastTrailJson)
+        return;
+    lastTrailJson = json;
+    if (immediate) {
+        if (trailSaveTimer) {
+            window.clearTimeout(trailSaveTimer);
+            trailSaveTimer = null;
+        }
+        saveTrail(trail);
+        return;
+    }
+    if (trailSaveTimer)
+        return;
+    trailSaveTimer = window.setTimeout(() => {
+        trailSaveTimer = null;
+        saveTrail(trail);
+    }, 800);
 }
 /** 用「底图层 + 当前轨迹层」重建合成树（换会话 / 导入 / 恢复骨架后调用） */
 function recomposeGraph() {
@@ -186,7 +209,13 @@ function refreshTrail() {
     try {
         const lastId = getLastMessageId();
         if (lastId < 0) {
-            trail = { schemaVersion: 1, points: [], hiddenPointIds: trail?.hiddenPointIds ?? [], nodes: [] };
+            trail = {
+                schemaVersion: 1,
+                points: [],
+                hiddenPointIds: trail?.hiddenPointIds ?? [],
+                nodes: [],
+                pathFixes: trail?.pathFixes,
+            };
             persistTrail();
             render();
             return;
@@ -429,15 +458,18 @@ const actions = {
     },
     onSelectNode(id) {
         selectedId = id;
+        canvas?.clearMulti();
         render();
     },
     onFocusNode(id) {
         focusId = id;
+        canvas?.clearMulti();
         canvas?.focusOn(id);
         render();
     },
     onFit() {
         focusId = null;
+        canvas?.clearMulti();
         canvas?.fit();
         render();
     },
@@ -477,14 +509,43 @@ const actions = {
         if (!selectedId)
             return;
         pushUndo();
-        graph.setPosition(selectedId, xy, { force: true, source: 'manual' });
+        // 只改坐标，不改来源：轨迹点拖完仍是轨迹点（留在聊天作用域），
+        // 不会被当成设定点写进底图、进而混进坐标书（用户明确要求的语义）
+        graph.setPosition(selectedId, xy, { force: true });
         const node = graph.get(selectedId);
         if (node) {
             node.locked = true;
             node.status = 'ok';
         }
         persistBaseMap();
+        persistTrail();
         render();
+    },
+    /** 框选批量拖动：一次撤销快照，逐点落坐标；来源保持不变（轨迹点仍是轨迹点） */
+    onMoveNodes(items) {
+        if (!items.length)
+            return;
+        pushUndo();
+        let moved = 0;
+        for (const item of items) {
+            if (!graph.setPosition(item.id, item.xy, { force: true }))
+                continue;
+            const node = graph.get(item.id);
+            if (node) {
+                node.locked = true;
+                node.status = 'ok';
+            }
+            moved++;
+        }
+        if (!moved) {
+            redoStack.length = 0;
+            undoStack.pop();
+            return;
+        }
+        persistBaseMap();
+        persistTrail();
+        render();
+        toast('success', `已批量移动 ${moved} 个地点`);
     },
     onRenameNode(id, name) {
         const node = graph.get(id);
@@ -1069,6 +1130,7 @@ async function init() {
             selectedId = id;
             actions.onMoveSelected(xy);
         },
+        onMoveNodes: items => actions.onMoveNodes(items),
         onEditNode: id => {
             const node = graph.get(id);
             if (node)
@@ -1121,6 +1183,11 @@ function bindEvents() {
             focusId = null;
             timelineIndex = null;
             // 轨迹层（含轨迹地点节点）跟着聊天走：换会话整个切换，底图层不动
+            if (trailSaveTimer) {
+                window.clearTimeout(trailSaveTimer);
+                trailSaveTimer = null;
+            }
+            lastTrailJson = '';
             trail = loadTrail() ?? { schemaVersion: 1, points: [], hiddenPointIds: [], nodes: [] };
             recomposeGraph();
             scheduleRefresh('切换聊天');

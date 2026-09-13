@@ -248,6 +248,8 @@ export function rebuildTrail(options: RebuildOptions): RebuildResult {
     schemaVersion: 1,
     points,
     hiddenPointIds: options.hiddenPointIds ?? [],
+    // 规范化结果必须跟着 trail 走：否则第一次重算就把「AI 整理」冲掉，重开会话又全乱
+    pathFixes: options.pathFixes,
   };
   return { trail, createdNodes, anomalies, orphanCount };
 }
@@ -290,9 +292,9 @@ export function collectRawLocations(messages: ChatMessageLike[], limit = 120): s
   return out;
 }
 
-/** 把轨迹里连续重复的坐标合并，供画线使用 */
+/** 把轨迹里连续重复的坐标合并，供画线使用。孤儿点（楼层已不在聊天里）不参与连线与绘制 */
 export function polylinePoints(points: TrailPoint[], hidden: Set<string>): TrailPoint[] {
-  const visible = points.filter(point => !hidden.has(point.id));
+  const visible = points.filter(point => !hidden.has(point.id) && !point.orphan);
   const result: TrailPoint[] = [];
   for (const point of visible) {
     const last = result[result.length - 1];

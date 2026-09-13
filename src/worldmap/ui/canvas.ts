@@ -88,6 +88,8 @@ export interface CanvasHooks {
   onSelect: (id: string | null) => void;
   onFocus: (id: string | null) => void;
   onMoveNode: (id: string, xy: Vec2) => void;
+  /** 框选批量拖动结束：一次性提交整组新坐标 */
+  onMoveNodes: (items: { id: string; xy: Vec2 }[]) => void;
   onEditNode: (id: string) => void;
   /** 编辑模式下在空白处右键 / 双击：在指定坐标新建节点 */
   onCreateNodeAt: (xy: Vec2, parentId: string | null) => void;
@@ -119,19 +121,25 @@ export class MapCanvas {
   private tx = 0;
   private ty = 0;
   private drag: {
-    mode: 'pan' | 'node';
+    mode: 'pan' | 'node' | 'group' | 'rubber';
     id?: string;
     startX: number;
     startY: number;
     originX: number;
     originY: number;
     moved: boolean;
+    /** group 模式：整组选中点的拖动起点（世界坐标） */
+    origins?: Map<string, Vec2>;
   } | null = null;
   private suppressClick = false;
   private offsets = new Map<string, Vec2>();
   private connectors: { from: Vec2; to: Vec2 }[] = [];
   private drawn: MapNode[] = [];
   private childCount = new Map<string, number>();
+  /** 编辑模式下的框选集合（多选的节点 id）；Shift+拖空白框选，抓住其中一点整组移动 */
+  private multi = new Set<string>();
+  /** 框选橡皮筋矩形（svg 本地屏幕坐标） */
+  private rubber: { x0: number; y0: number; x1: number; y1: number } | null = null;
   /** 顶部中间的坐标条：显示当前选中点的名称 + 坐标（没选中就藏起来） */
   private hud: HTMLDivElement;
 
@@ -648,6 +656,20 @@ export class MapCanvas {
       });
       halo.setAttribute('stroke-width', String(1.4 / Math.max(0.3, this.scale)));
       group.appendChild(halo);
+      // 框选多选的高亮环（虚线金圈）
+      if (this.multi.has(node.id)) {
+        group.appendChild(
+          el('circle', {
+            cx: pos[0],
+            cy: pos[1],
+            r: radius * 1.75,
+            fill: 'none',
+            stroke: '#d9c08c',
+            'stroke-width': 1.6 / Math.max(0.3, this.scale),
+            'stroke-dasharray': `${4 / Math.max(0.3, this.scale)} ${3 / Math.max(0.3, this.scale)}`,
+          }),
+        );
+      }
       group.appendChild(el('circle', { cx: pos[0], cy: pos[1], r: radius * 0.72, fill: color }));
 
       // 宏观视角下大域只留地名（图标在这个尺度纯属噪音）；放大后再把图标带回来
@@ -781,6 +803,23 @@ export class MapCanvas {
     for (const d of COMPASS.paths) compass.appendChild(el('path', { d }));
     for (const [cx, cy, r] of COMPASS.circles) compass.appendChild(el('circle', { cx, cy, r }));
     this.overlay.replaceChildren(compass);
+    // 框选橡皮筋（屏幕坐标，画在 overlay 层）
+    if (this.rubber) {
+      const { x0, y0, x1, y1 } = this.rubber;
+      this.overlay.appendChild(
+        el('rect', {
+          x: Math.min(x0, x1),
+          y: Math.min(y0, y1),
+          width: Math.abs(x1 - x0),
+          height: Math.abs(y1 - y0),
+          rx: 4,
+          fill: 'rgba(217,192,140,.12)',
+          stroke: '#d9c08c',
+          'stroke-width': 1,
+          'stroke-dasharray': '5 3',
+        }),
+      );
+    }
 
     this.wrap.dataset.dymScale = this.scale.toFixed(2);
     this.wrap.dataset.dymNodes = String(accepted.length);
@@ -799,6 +838,36 @@ export class MapCanvas {
   }
 
   // ── 交互 ────────────────────────────────────────────────────────────
+  /** 框选结束：把橡皮筋矩形（屏幕坐标）换成世界矩形，选中范围内的已绘制节点 */
+  private finishRubber(): void {
+    if (this.rubber) {
+      const x0 = Math.min(this.rubber.x0, this.rubber.x1);
+      const x1 = Math.max(this.rubber.x0, this.rubber.x1);
+      const y0 = Math.min(this.rubber.y0, this.rubber.y1);
+      const y1 = Math.max(this.rubber.y0, this.rubber.y1);
+      const wx0 = (x0 - this.tx) / this.scale;
+      const wx1 = (x1 - this.tx) / this.scale;
+      const wy0 = (y0 - this.ty) / this.scale;
+      const wy1 = (y1 - this.ty) / this.scale;
+      const picked = new Set<string>();
+      for (const node of this.drawn) {
+        const pos = this.worldPos(node);
+        if (pos[0] >= wx0 && pos[0] <= wx1 && pos[1] >= wy0 && pos[1] <= wy1) picked.add(node.id);
+      }
+      this.multi = picked;
+    }
+    this.rubber = null;
+    this.render();
+  }
+
+  /** 清空多选（点击空白选点 / 下钻 / 全图时调用） */
+  clearMulti(): void {
+    if (this.multi.size) {
+      this.multi.clear();
+      this.render();
+    }
+  }
+
   private hitTest(clientX: number, clientY: number): MapNode | null {
     const [wx, wy] = this.screenToWorld(clientX, clientY);
     let best: MapNode | null = null;
@@ -833,20 +902,64 @@ export class MapCanvas {
     this.svg.addEventListener('pointerdown', event => {
       if (event.button !== 0) return;
       this.svg.setPointerCapture(event.pointerId);
+      const shift = event.shiftKey;
       const node = this.hitTest(event.clientX, event.clientY);
-      if (this.view.editMode && node) {
-        const pos = this.worldPos(node);
-        this.drag = {
-          mode: 'node',
-          id: node.id,
-          startX: event.clientX,
-          startY: event.clientY,
-          originX: pos[0],
-          originY: pos[1],
-          moved: false,
-        };
-        this.svg.classList.add('dym-panning');
-        return;
+      if (this.view.editMode) {
+        // Shift + 空白处拖动 = 框选
+        if (shift && !node) {
+          this.drag = {
+            mode: 'rubber',
+            startX: event.clientX,
+            startY: event.clientY,
+            originX: 0,
+            originY: 0,
+            moved: false,
+          };
+          this.svg.classList.add('dym-panning');
+          return;
+        }
+        if (node && shift) {
+          // Shift + 点 = 加入/移出多选（不拖动）
+          if (this.multi.has(node.id)) this.multi.delete(node.id);
+          else this.multi.add(node.id);
+          this.render();
+          return;
+        }
+        if (node && !shift && this.multi.has(node.id) && this.multi.size > 1) {
+          // 抓住多选中的点 → 整组拖动
+          const origins = new Map<string, Vec2>();
+          for (const id of this.multi) {
+            const picked = this.view.graph.get(id);
+            if (picked) origins.set(id, this.worldPos(picked));
+          }
+          this.drag = {
+            mode: 'group',
+            startX: event.clientX,
+            startY: event.clientY,
+            originX: 0,
+            originY: 0,
+            origins,
+            moved: false,
+          };
+          this.svg.classList.add('dym-panning');
+          return;
+        }
+        if (node) {
+          if (!shift) this.multi.clear();
+          const pos = this.worldPos(node);
+          this.drag = {
+            mode: 'node',
+            id: node.id,
+            startX: event.clientX,
+            startY: event.clientY,
+            originX: pos[0],
+            originY: pos[1],
+            moved: false,
+          };
+          this.svg.classList.add('dym-panning');
+          return;
+        }
+        if (!shift) this.multi.clear();
       }
       this.drag = {
         mode: 'pan',
@@ -868,10 +981,28 @@ export class MapCanvas {
         this.tx = this.drag.originX + dx;
         this.ty = this.drag.originY + dy;
         this.applyTransform();
-      } else if (this.drag.id) {
-        const node = this.view.graph.get(this.drag.id);
+      } else if (this.drag.mode === 'node') {
+        const node = this.view.graph.get(this.drag.id ?? '');
         if (!node) return;
         node.xy = [this.drag.originX + dx / this.scale, this.drag.originY + dy / this.scale];
+        this.render();
+      } else if (this.drag.mode === 'group') {
+        const wx = dx / this.scale;
+        const wy = dy / this.scale;
+        for (const [id, origin] of this.drag.origins ?? []) {
+          const picked = this.view.graph.get(id);
+          if (!picked) continue;
+          picked.xy = [origin[0] + wx, origin[1] + wy];
+        }
+        this.render();
+      } else if (this.drag.mode === 'rubber') {
+        const rect = this.svg.getBoundingClientRect();
+        this.rubber = {
+          x0: this.drag.startX - rect.left,
+          y0: this.drag.startY - rect.top,
+          x1: event.clientX - rect.left,
+          y1: event.clientY - rect.top,
+        };
         this.render();
       }
     });
@@ -887,6 +1018,20 @@ export class MapCanvas {
           this.hooks.onMoveNode(node.id, [Math.round(node.xy[0] * 100) / 100, Math.round(node.xy[1] * 100) / 100]);
           this.suppressClick = true;
         }
+      } else if (current.mode === 'group' && current.moved) {
+        // 整组提交：一次撤销快照，逐点落坐标（来源保持不变）
+        const items: { id: string; xy: Vec2 }[] = [];
+        for (const [id, origin] of current.origins ?? []) {
+          const picked = this.view.graph.get(id);
+          if (!picked) continue;
+          items.push({ id, xy: [Math.round(picked.xy[0] * 100) / 100, Math.round(picked.xy[1] * 100) / 100] });
+        }
+        if (items.length) {
+          this.suppressClick = true;
+          this.hooks.onMoveNodes(items);
+        }
+      } else if (current.mode === 'rubber') {
+        this.finishRubber();
       }
     };
     this.svg.addEventListener('pointerup', endDrag);
