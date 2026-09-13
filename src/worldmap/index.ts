@@ -561,45 +561,51 @@ const actions = {
     restore(next);
     toast('info', '已重做');
   },
-  onMoveSelected(xy: Vec2) {
-    if (!selectedId) return;
-    pushUndo();
-    // 只改坐标，不改来源：轨迹点拖完仍是轨迹点（留在聊天作用域），
-    // 不会被当成设定点写进底图、进而混进坐标书（用户明确要求的语义）
-    graph.setPosition(selectedId, xy, { force: true });
-    const node = graph.get(selectedId);
+  /** 落坐标（不改来源：轨迹点拖完仍是轨迹点）；撤销快照由拖拽开始时打 */
+  applyMove(id: string, xy: Vec2) {
+    graph.setPosition(id, xy, { force: true });
+    const node = graph.get(id);
     if (node) {
       node.locked = true;
       node.status = 'ok';
     }
+  },
+  onMoveSelected(xy: Vec2) {
+    if (!selectedId) return;
+    pushUndo();
+    actions.applyMove(selectedId, xy);
     persistBaseMap();
     persistTrail();
     render();
   },
-  /** 框选批量拖动：一次撤销快照，逐点落坐标；来源保持不变（轨迹点仍是轨迹点） */
+  /** 框选批量拖动：一次撤销快照，逐点落坐标；固定（pinned）的点跳过 */
   onMoveNodes(items: { id: string; xy: Vec2 }[]) {
     if (!items.length) return;
-    pushUndo();
     let moved = 0;
     for (const item of items) {
-      if (!graph.setPosition(item.id, item.xy, { force: true })) continue;
       const node = graph.get(item.id);
-      if (node) {
-        node.locked = true;
-        node.status = 'ok';
-      }
+      if (!node || node.pinned) continue;
+      actions.applyMove(item.id, item.xy);
       moved++;
     }
-    if (!moved) {
-      redoStack.length = 0;
-      undoStack.pop();
-      return;
-    }
+    if (!moved) return;
     persistBaseMap();
     persistTrail();
     render();
     toast('success', `已批量移动 ${moved} 个地点`);
   },
+  /** 固定/取消固定位置：固定后框选与批量拖动跳过该点（与防 AI 覆盖的「锁定」独立） */
+  onTogglePinned(id: string) {
+    const node = graph.get(id);
+    if (!node) return;
+    pushUndo();
+    node.pinned = !node.pinned;
+    persistBaseMap();
+    persistTrail();
+    render();
+    toast('info', node.pinned ? '已固定位置：框选与批量拖动会跳过它' : '已取消固定');
+  },
+
   onRenameNode(id: string, name: string) {
     const node = graph.get(id);
     const trimmed = name.trim();
@@ -1169,9 +1175,17 @@ async function init(): Promise<void> {
       onFocus: id => actions.onFocusNode(id),
       onMoveNode: (id, xy) => {
         selectedId = id;
-        actions.onMoveSelected(xy);
+        // 撤销快照已在拖拽开始时打（onMoveSnapshot），这里只落坐标
+        actions.applyMove(id, xy);
+        persistBaseMap();
+        persistTrail();
+        render();
       },
       onMoveNodes: items => actions.onMoveNodes(items),
+      onMoveSnapshot: () => pushUndo(),
+      onMoveAborted: () => {
+        undoStack.pop();
+      },
       onBoxSelected: count => toast('info', `已框选 ${count} 个点：抓住其中一点拖动整组；Shift 点单点加减选`),
       onEditNode: id => {
         const node = graph.get(id);

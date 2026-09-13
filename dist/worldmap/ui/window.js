@@ -235,6 +235,7 @@ export class MapWindow {
       </div>
       <div class="dym-row">
         <button class="dym-btn" data-act="toggle-lock">锁定 / 解锁</button>
+        <button class="dym-btn" data-act="toggle-pin" title="固定后：框选与批量拖动会跳过该点（直接拖仍可移动）">固定位置</button>
         <button class="dym-btn dym-danger" data-act="delete-node">删除节点</button>
       </div>
       <div class="dym-hint">
@@ -288,6 +289,7 @@ export class MapWindow {
             ]);
         });
         edit.querySelector('[data-act=toggle-lock]')?.addEventListener('click', () => this.data.selectedId && this.actions.onToggleLock(this.data.selectedId));
+        edit.querySelector('[data-act=toggle-pin]')?.addEventListener('click', () => this.data.selectedId && this.actions.onTogglePinned(this.data.selectedId));
         // 删除用两步确认，避免在隐藏 iframe 里弹 confirm 对话框
         const deleteButton = edit.querySelector('[data-act=delete-node]');
         deleteButton.addEventListener('click', () => {
@@ -1193,6 +1195,14 @@ export class MapWindow {
         tierSelect.disabled = !selected;
         const editToggle = edit.querySelector('[data-role=edit-mode]');
         editToggle.checked = this.data.editMode;
+        // 固定位置按钮：跟随选中点的状态
+        const pinButton = edit.querySelector('[data-act=toggle-pin]');
+        if (pinButton) {
+            const selected = this.data.selectedId ? this.data.canvas.getView().graph.get(this.data.selectedId) : undefined;
+            pinButton.textContent = selected?.pinned ? '取消固定' : '固定位置';
+            pinButton.disabled = !selected;
+            pinButton.title = '固定后：框选与批量拖动会跳过该点（直接拖仍可移动）';
+        }
         edit.querySelector('[data-act=undo]').disabled = !this.data.canUndo;
         edit.querySelector('[data-act=redo]').disabled = !this.data.canRedo;
         // 轨迹

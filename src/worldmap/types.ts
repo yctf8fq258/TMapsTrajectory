@@ -116,6 +116,11 @@ export interface MapNode {
    * 设回「自动」时删除该字段。
    */
   tier?: NodeTier;
+  /**
+   * 位置固定：框选与批量拖动会跳过该点（防误拖）。
+   * 与 locked（防 AI 覆盖）是两回事 —— 固定的点直接拖仍可移动。
+   */
+  pinned?: boolean;
   note?: string;
 }
 

@@ -647,6 +647,17 @@ export class MapCanvas {
                 badge.textContent = node.altitude > 0 ? '▲' : '▼';
                 group.appendChild(badge);
             }
+            // 位置固定的点：右上一颗小图钉点，跟「锁定」的视觉区分开
+            if (node.pinned) {
+                group.appendChild(el('circle', {
+                    cx: pos[0] + radius * 0.95,
+                    cy: pos[1] - radius * 0.95,
+                    r: Math.max(1.2, radius * 0.32),
+                    fill: '#8a8272',
+                    stroke: 'rgba(253,247,232,.9)',
+                    'stroke-width': 1 / Math.max(0.3, this.scale),
+                }));
+            }
             nodeGroup.appendChild(group);
             const labelFrom = TIER_LABEL_SCALE[Math.min(tier, TIER_LABEL_SCALE.length - 1)] ?? 1;
             if (this.scale >= labelFrom || node.id === this.view.selectedId || node.id === currentId) {
@@ -793,8 +804,19 @@ export class MapCanvas {
             const wx1 = (x1 - this.tx) / this.scale;
             const wy0 = (y0 - this.ty) / this.scale;
             const wy1 = (y1 - this.ty) / this.scale;
+            // 从**全图**挑而不是只挑画出来的 —— 完全重叠时屏幕折叠只画一个，
+            // 被遮住的那个也要能被框进去一起拖走（这正是框选对重叠点的主要用途）。
+            // 只挑当前缩放下会显示的层级，免得误拖八竿子外看不见的大域点。
             const picked = new Set();
-            for (const node of this.drawn) {
+            for (const node of this.view.graph.toArray()) {
+                if (this.view.hiddenNodeIds.has(node.id))
+                    continue;
+                if (node.status === 'unplaced' && !this.view.showUnplaced)
+                    continue;
+                if (node.pinned)
+                    continue; // 位置固定：框选直接跳过
+                if (this.scale < (TIER_VISIBLE_SCALE[tierOf(node)] ?? 0))
+                    continue;
                 const pos = this.worldPos(node);
                 if (pos[0] >= wx0 && pos[0] <= wx1 && pos[1] >= wy0 && pos[1] <= wy1)
                     picked.add(node.id);
@@ -832,6 +854,53 @@ export class MapCanvas {
         }
         return best;
     }
+    /** 命中所有重叠的已绘制节点（按距离从近到远） */
+    hitTestAll(clientX, clientY) {
+        const [wx, wy] = this.screenToWorld(clientX, clientY);
+        const hits = [];
+        for (const node of this.drawn) {
+            const tier = tierOf(node);
+            const radiusPx = TIER_RADIUS_PX[Math.min(tier, TIER_RADIUS_PX.length - 1)] ?? 6;
+            const pos = this.worldPos(node);
+            const threshold = Math.max(radiusPx / Math.max(0.3, this.scale), 12 / this.scale);
+            const dx = pos[0] - wx;
+            const dy = pos[1] - wy;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            if (distance < threshold)
+                hits.push({ node, d: distance });
+        }
+        return hits.sort((a, b) => a.d - b.d).map(item => item.node);
+    }
+    /**
+     * 拾取一个节点，重叠时**同位连点轮换**：
+     * 同一位置连点，第一次选最上面的，再点换被压住的那个（像设计软件那样）。
+     * 轮换到的点会记住 —— 下一次按住它拖动，拖的就是你轮换到的那个，不是压在上面的。
+     */
+    lastPick = null;
+    pickedAtDown = null;
+    pickNode(clientX, clientY) {
+        const hits = this.hitTestAll(clientX, clientY);
+        if (!hits.length) {
+            this.lastPick = null;
+            return null;
+        }
+        if (hits.length === 1) {
+            this.lastPick = null;
+            return hits[0];
+        }
+        const sameSpot = this.lastPick &&
+            this.lastPick.ids.length === hits.length &&
+            this.lastPick.ids.every((id, index) => id === hits[index].id) &&
+            Math.hypot(clientX - this.lastPick.x, clientY - this.lastPick.y) < 10;
+        if (sameSpot && this.lastPick) {
+            this.lastPick.index = (this.lastPick.index + 1) % hits.length;
+            this.lastPick.x = clientX;
+            this.lastPick.y = clientY;
+            return hits[this.lastPick.index];
+        }
+        this.lastPick = { x: clientX, y: clientY, ids: hits.map(hit => hit.id), index: 0 };
+        return hits[0];
+    }
     bind() {
         this.svg.addEventListener('wheel', event => {
             event.preventDefault();
@@ -846,7 +915,8 @@ export class MapCanvas {
                 event.preventDefault();
             this.svg.setPointerCapture(event.pointerId);
             const shift = event.shiftKey;
-            const node = this.hitTest(event.clientX, event.clientY);
+            const node = this.pickNode(event.clientX, event.clientY);
+            this.pickedAtDown = node;
             if (this.view.editMode) {
                 // 框选模式开着（或按住 Shift）+ 空白处拖动 = 框选
                 if ((shift || this.boxSelectMode) && !node) {
@@ -871,11 +941,11 @@ export class MapCanvas {
                     return;
                 }
                 if (node && !shift && this.multi.has(node.id) && this.multi.size > 1) {
-                    // 抓住多选中的点 → 整组拖动
+                    // 抓住多选中的点 → 整组拖动（固定的点不参与）
                     const origins = new Map();
                     for (const id of this.multi) {
                         const picked = this.view.graph.get(id);
-                        if (picked)
+                        if (picked && !picked.pinned)
                             origins.set(id, this.worldPos(picked));
                     }
                     this.drag = {
@@ -887,6 +957,7 @@ export class MapCanvas {
                         origins,
                         moved: false,
                     };
+                    this.hooks.onMoveSnapshot?.();
                     this.updateCursor();
                     return;
                 }
@@ -903,6 +974,8 @@ export class MapCanvas {
                         originY: pos[1],
                         moved: false,
                     };
+                    // 撤销快照必须在坐标被实时改写**之前**打 —— 拖完再打，撤销恢复的还是拖完的位置
+                    this.hooks.onMoveSnapshot?.();
                     this.updateCursor();
                     return;
                 }
@@ -966,6 +1039,10 @@ export class MapCanvas {
             const current = this.drag;
             this.drag = null;
             this.updateCursor();
+            // 开拖时打了快照但没真动 → 把快照退回去，别让撤销多一个空步
+            if (!current.moved && (current.mode === 'node' || current.mode === 'group')) {
+                this.hooks.onMoveAborted?.();
+            }
             if (current.mode === 'node' && current.id && current.moved) {
                 const node = this.view.graph.get(current.id);
                 if (node) {
@@ -1001,11 +1078,14 @@ export class MapCanvas {
                 this.suppressClick = false;
                 return;
             }
-            const node = this.hitTest(event.clientX, event.clientY);
+            // 用按下时拾取的节点：重叠连点轮换的结果不被 click 重复推进
+            const node = this.pickedAtDown;
+            this.pickedAtDown = null;
             this.hooks.onSelect(node ? node.id : null);
         });
         this.svg.addEventListener('dblclick', event => {
-            const node = this.hitTest(event.clientX, event.clientY);
+            const node = this.pickedAtDown ?? this.hitTest(event.clientX, event.clientY);
+            this.pickedAtDown = null;
             if (node) {
                 this.hooks.onFocus(node.id);
                 return;
@@ -1019,7 +1099,8 @@ export class MapCanvas {
         });
         this.svg.addEventListener('contextmenu', event => {
             event.preventDefault();
-            const node = this.hitTest(event.clientX, event.clientY);
+            const node = this.pickedAtDown ?? this.hitTest(event.clientX, event.clientY);
+            this.pickedAtDown = null;
             if (node) {
                 this.hooks.onEditNode(node.id);
                 return;
