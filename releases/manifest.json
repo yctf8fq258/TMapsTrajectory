@@ -5,6 +5,6 @@
   "ref": "main",
   "runtime": "https://testingcf.jsdelivr.net/gh/yctf8fq258/TMapsTrajectory@main/dist/worldmap/index.single.js",
   "manifest": "https://testingcf.jsdelivr.net/gh/yctf8fq258/TMapsTrajectory@main/releases/manifest.json",
-  "generatedAt": "2026-09-13T22:47:59.505Z",
+  "generatedAt": "2026-09-13T23:03:45.568Z",
   "note": "把本仓库推到 GitHub 后，把 ref 改成发布用的 tag 或 commit，玩家侧脚本内容写 import('<runtime>') 即可。"
 }

@@ -3807,10 +3807,9 @@ class MapCanvas {
             }
             return this.worldPos(cursor);
         }
-        const pos = this.offsets.get(node.id);
-        if (!pos)
-            return point.xy;
-        return [point.xy[0] + (pos[0] - node.xy[0]), point.xy[1] + (pos[1] - node.xy[1])];
+        // 一律跟节点当前位置走（含高度偏移）—— 之前无偏移时返回楼层点的旧坐标快照，
+        // 拖动/批量拖动节点后轨迹线留在原地不跟（实测踩坑）
+        return this.offsets.get(node.id) ?? node.xy;
     }
     visibleTrailPoints() {
         if (!this.view.showTrail)
@@ -4440,6 +4439,26 @@ class MapCanvas {
             const rect = this.svg.getBoundingClientRect();
             this.zoomBy(event.deltaY < 0 ? 1.16 : 1 / 1.16, event.clientX - rect.left, event.clientY - rect.top);
         }, { passive: false });
+        // 鼠标中键按住拖拽 = 平移地图（任何模式下都可用，框选模式里也能平移）
+        this.svg.addEventListener('pointerdown', event => {
+            if (event.button !== 1)
+                return;
+            event.preventDefault(); // 压掉 Chrome 的中键自动滚动
+            this.svg.setPointerCapture(event.pointerId);
+            this.drag = {
+                mode: 'pan',
+                startX: event.clientX,
+                startY: event.clientY,
+                originX: this.tx,
+                originY: this.ty,
+                moved: false,
+            };
+            this.updateCursor();
+        });
+        this.svg.addEventListener('auxclick', event => {
+            if (event.button === 1)
+                event.preventDefault();
+        });
         this.svg.addEventListener('pointerdown', event => {
             if (event.button !== 0)
                 return;
@@ -4634,6 +4653,11 @@ class MapCanvas {
             event.preventDefault();
             const node = this.pickedAtDown ?? this.hitTest(event.clientX, event.clientY);
             this.pickedAtDown = null;
+            // 有框选结果时，右键空白 = 取消框选（不算"新建地点"的那次右键）
+            if (!node && this.multi.size) {
+                this.clearMulti();
+                return;
+            }
             if (node) {
                 this.hooks.onEditNode(node.id);
                 return;
@@ -4925,7 +4949,9 @@ class MapWindow {
       </div>
       <div class="dym-hint">
         增点：<b>开启编辑模式后，在画布空白处右键或双击</b>即可在那里新增一个地点（会挂在当前下钻的节点下）。<br>
-        批量：<b>Shift + 拖空白处框选</b>多个点（Shift 点单点可加减），抓住其中一点拖动整组移动。<br>
+        批量：打开<b>框选模式</b>后空白处拖动框选多点（Shift 点单点可加减），抓住其中一点拖动整组移动；
+        <b>右键空白处取消框选</b>；固定的点不会被框到。<br>
+        平移：<b>鼠标中键按住拖拽</b>任何模式下都能平移地图。<br>
         删点：选中后点上面的「删除节点」，或按 <b>Delete</b> 键（子节点会一起删）。<br>
         锁定后的节点不会被地图布局 AI 覆盖；人工拖动会自动标记为「人工」。
       </div>`;
