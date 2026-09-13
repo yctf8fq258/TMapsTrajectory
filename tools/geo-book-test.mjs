@@ -146,24 +146,22 @@ const defaultDrafts = geoBook.buildCoordDrafts(graph, {
 check('用默认文本能生成两条蓝灯规则条目（顺序：总纲 → 移动 → 叙事）',
   defaultDrafts[0].name === '[舆图]坐标系总纲' && defaultDrafts[1].name === '[舆图]人物移动规则' && defaultDrafts[2].name === '[舆图]叙事地理规则');
 
-// ── 剔除轨迹地点（换新对话别带上一档玩出来的地名）────────────────────────
+// ── 轨迹来源的点一律不进书（硬规则，含锁定/手调的）────────────────────────
 const trailRows = [
   mk('某域', 0, 0, 'realm'),
   mk('某域·设定城', 10, 10, 'city'),
   mk('某域·玩出来的镇', 20, 20, 'city', { source: 'trail' }),
-  mk('某域·玩出来的镇·茶棚', 20.5, 20.5, 'site', { source: 'trail' }),
+  mk('某域·玩出来的镇·茶棚', 20.5, 20.5, 'site', { source: 'trail', locked: true }),
 ];
 trailRows[1].parentId = trailRows[0].id;
 trailRows[2].parentId = trailRows[0].id;
 trailRows[3].parentId = trailRows[2].id;
 const trailGraph = new MapGraph(trailRows);
-const keepAll = geoBook.selectCoordNodes(trailGraph, { includeTier4: true });
-check('默认保留轨迹地点', keepAll.some(node => node.path === '某域·玩出来的镇'));
-const dropTrail = geoBook.selectCoordNodes(trailGraph, { includeTier4: true, excludeTrail: true });
-check('开启剔除后轨迹地点（含其子点）不进书', !dropTrail.some(node => node.path.includes('玩出来的镇')));
-check('剔除只针对轨迹来源，设定地点照旧', dropTrail.some(node => node.path === '某域·设定城'));
-const dropped = geoBook.buildCoordDrafts(trailGraph, { includeTier4: true, maxEntries: 200, excludeTrailPlaces: true });
-check('剔除参数能一路传到条目生成', !dropped.some(draft => draft.content.includes('玩出来的镇')));
+const kept = geoBook.selectCoordNodes(trailGraph, { includeTier4: true });
+check('轨迹地点（含锁定/手调的）一律不进书', !kept.some(node => node.source === 'trail'));
+check('设定地点照旧进书', kept.some(node => node.path === '某域·设定城'));
+const dropped = geoBook.buildCoordDrafts(trailGraph, { includeTier4: true, maxEntries: 200 });
+check('硬规则能一路传到条目生成', !dropped.some(draft => draft.content.includes('玩出来的镇')));
 
 // ── 手动层级覆盖（编辑页下拉）───────────────────────────────────────────
 const mkTier = (path, x, y, kind, tier) => {

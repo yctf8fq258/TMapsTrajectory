@@ -398,7 +398,6 @@ function geoSyncOptions() {
         includeTier4: settings.coordBook.includeTier4,
         maxEntries: settings.coordBook.maxEntries,
         hiddenIds: [...base.hiddenIds],
-        excludeTrailPlaces: settings.coordBook.excludeTrailPlaces === true,
         // 关掉开关 = 保留文本但不写进书（传空串，geo-book 侧非空才生成条目）
         movementRules: settings.coordBook.movementRulesEnabled === false ? '' : settings.coordBook.movementRules ?? '',
         narrativeRules: settings.coordBook.narrativeRulesEnabled === false ? '' : settings.coordBook.narrativeRules ?? '',

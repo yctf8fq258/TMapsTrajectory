@@ -204,7 +204,6 @@ const DEFAULT_COORD_BOOK = {
     enabled: false,
     includeTier4: true,
     maxEntries: GEO_BOOK_MAX_ENTRIES,
-    excludeTrailPlaces: false,
     // 两段规则默认预填 —— 设置页打开就有文本，不需要再去文档里手动复制
     movementRules: DEFAULT_MOVEMENT_RULES,
     movementRulesEnabled: true,
@@ -2413,11 +2412,12 @@ __def("./geo-book.js", () => {
 const { GEO_BOOK_MAX_ENTRIES, GEO_ENTRY_PREFIX, WORLDMAP_BOOK } = __req('./types.js');
 const { PATH_ALIASES, SEGMENT_ALIASES, tierOf } = __req('./graph.js');
 /**
- * 挑出要进坐标书的节点：
+ * 挑出要进坐标书的节点 —— 硬规则：**只有底图层的节点进书**（种子/预设/AI 铺点/手动新建），
+ * 所有轨迹来源（source==='trail'）的节点一律不进，无论是否被拖动、锁定或确认过；
+ * 轨迹层属于当前会话，把玩出来的地名写进设定书会污染世界观资料。
  *   · tier≤3（界域/地域/城池与宗级势力）全部收；
  *   · tier4 只收 includeTier4 且已确认定位（status==='ok'）的城内要点；
- *   · tier5（房间）、unplaced（待定位虚线圈）、被隐藏的一律不进 —— 虚线圈的坐标还没被人工确认，
- *     写进书里等于把猜测喂给模型。
+ *   · tier5（房间）、unplaced（待定位虚线圈）、被隐藏的一律不进。
  */
 function selectCoordNodes(graph, options) {
     const hidden = new Set(options.hiddenIds ?? []);
@@ -2425,8 +2425,8 @@ function selectCoordNodes(graph, options) {
         .toArray()
         .filter(node => !hidden.has(node.id))
         .filter(node => node.status === 'ok')
-        // 剔除轨迹地点：换新对话时不想让上一档玩出来的地名进书（人工拖过的也算轨迹地点）
-        .filter(node => !(options.excludeTrail && node.source === 'trail'))
+        // 硬规则：轨迹层的点不进坐标书（拖动/锁定都不改变它的轨迹来源）
+        .filter(node => node.source !== 'trail')
         .filter(node => {
         const tier = tierOf(node);
         if (tier <= 3)
@@ -2516,7 +2516,6 @@ function buildCoordDrafts(graph, options = {}) {
     const nodes = selectCoordNodes(graph, {
         includeTier4,
         hiddenIds: options.hiddenIds,
-        excludeTrail: options.excludeTrailPlaces,
     }).slice(0, maxEntries);
     for (const node of nodes) {
         let name = `${GEO_ENTRY_PREFIX}${node.name}`;
@@ -5421,7 +5420,6 @@ class MapWindow {
             coordBook: {
                 enabled: Boolean(book?.enabled),
                 includeTier4: book?.includeTier4 !== false,
-                excludeTrailPlaces: book?.excludeTrailPlaces === true,
                 maxEntries: book?.maxEntries ?? 200,
                 movementRulesEnabled: book?.movementRulesEnabled !== false,
                 narrativeRulesEnabled: book?.narrativeRulesEnabled !== false,
@@ -5444,7 +5442,6 @@ class MapWindow {
             coordBook: {
                 enabled: checked('coordEnabled'),
                 includeTier4: checked('coordTier4'),
-                excludeTrailPlaces: this.data.settings?.coordBook?.excludeTrailPlaces === true,
                 maxEntries: this.data.settings?.coordBook?.maxEntries ?? 200,
                 movementRulesEnabled: checked('coordMovementOn'),
                 narrativeRulesEnabled: checked('coordNarrativeOn'),
@@ -6422,7 +6419,6 @@ function geoSyncOptions() {
         includeTier4: settings.coordBook.includeTier4,
         maxEntries: settings.coordBook.maxEntries,
         hiddenIds: [...base.hiddenIds],
-        excludeTrailPlaces: settings.coordBook.excludeTrailPlaces === true,
         // 关掉开关 = 保留文本但不写进书（传空串，geo-book 侧非空才生成条目）
         movementRules: settings.coordBook.movementRulesEnabled === false ? '' : settings.coordBook.movementRules ?? '',
         narrativeRules: settings.coordBook.narrativeRulesEnabled === false ? '' : settings.coordBook.narrativeRules ?? '',

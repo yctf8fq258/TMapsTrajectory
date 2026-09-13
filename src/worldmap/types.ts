@@ -341,11 +341,6 @@ export interface CoordBookSettings {
   /** 地点条目上限（总纲另算） */
   maxEntries: number;
   /**
-   * 剔除轨迹地点：玩家轨迹自动产生的地点（`source === 'trail'`，含人工拖动过的）不进坐标书。
-   * 换新对话时想让模型只看到「设定里的地方」而不是上一档玩出来的地名，就打开它。
-   */
-  excludeTrailPlaces: boolean;
-  /**
    * 人物移动规则（境界 → 日行速度/移动方式）。非空且启用时，作为一条**蓝灯条目**
    * `[舆图]人物移动规则` 一起写进坐标书 —— 距离换算与赶路方式跟坐标系统同源，随书分发。
    */
@@ -436,7 +431,6 @@ export const DEFAULT_COORD_BOOK: CoordBookSettings = {
   enabled: false,
   includeTier4: true,
   maxEntries: GEO_BOOK_MAX_ENTRIES,
-  excludeTrailPlaces: false,
   // 两段规则默认预填 —— 设置页打开就有文本，不需要再去文档里手动复制
   movementRules: DEFAULT_MOVEMENT_RULES,
   movementRulesEnabled: true,

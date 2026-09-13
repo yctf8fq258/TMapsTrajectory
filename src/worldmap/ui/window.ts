@@ -800,7 +800,6 @@ export class MapWindow {
       coordBook: {
         enabled: Boolean(book?.enabled),
         includeTier4: book?.includeTier4 !== false,
-        excludeTrailPlaces: book?.excludeTrailPlaces === true,
         maxEntries: book?.maxEntries ?? 200,
         movementRulesEnabled: book?.movementRulesEnabled !== false,
         narrativeRulesEnabled: book?.narrativeRulesEnabled !== false,
@@ -824,7 +823,6 @@ export class MapWindow {
       coordBook: {
         enabled: checked('coordEnabled'),
         includeTier4: checked('coordTier4'),
-        excludeTrailPlaces: this.data.settings?.coordBook?.excludeTrailPlaces === true,
         maxEntries: this.data.settings?.coordBook?.maxEntries ?? 200,
         movementRulesEnabled: checked('coordMovementOn'),
         narrativeRulesEnabled: checked('coordNarrativeOn'),

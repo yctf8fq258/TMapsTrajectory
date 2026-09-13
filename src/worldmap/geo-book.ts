@@ -59,20 +59,21 @@ export interface CoordBookScope {
 }
 
 /**
- * 挑出要进坐标书的节点：
+ * 挑出要进坐标书的节点 —— 硬规则：**只有底图层的节点进书**（种子/预设/AI 铺点/手动新建），
+ * 所有轨迹来源（source==='trail'）的节点一律不进，无论是否被拖动、锁定或确认过；
+ * 轨迹层属于当前会话，把玩出来的地名写进设定书会污染世界观资料。
  *   · tier≤3（界域/地域/城池与宗级势力）全部收；
  *   · tier4 只收 includeTier4 且已确认定位（status==='ok'）的城内要点；
- *   · tier5（房间）、unplaced（待定位虚线圈）、被隐藏的一律不进 —— 虚线圈的坐标还没被人工确认，
- *     写进书里等于把猜测喂给模型。
+ *   · tier5（房间）、unplaced（待定位虚线圈）、被隐藏的一律不进。
  */
-export function selectCoordNodes(graph: MapGraph, options: { includeTier4: boolean; hiddenIds?: string[]; excludeTrail?: boolean }): MapNode[] {
+export function selectCoordNodes(graph: MapGraph, options: { includeTier4: boolean; hiddenIds?: string[] }): MapNode[] {
   const hidden = new Set(options.hiddenIds ?? []);
   return graph
     .toArray()
     .filter(node => !hidden.has(node.id))
     .filter(node => node.status === 'ok')
-    // 剔除轨迹地点：换新对话时不想让上一档玩出来的地名进书（人工拖过的也算轨迹地点）
-    .filter(node => !(options.excludeTrail && node.source === 'trail'))
+    // 硬规则：轨迹层的点不进坐标书（拖动/锁定都不改变它的轨迹来源）
+    .filter(node => node.source !== 'trail')
     .filter(node => {
       const tier = tierOf(node);
       if (tier <= 3) return true;
@@ -143,7 +144,6 @@ export function buildCoordDrafts(
     hiddenIds?: string[];
     movementRules?: string;
     narrativeRules?: string;
-    excludeTrailPlaces?: boolean;
   } = {},
 ): CoordEntryDraft[] {
   const includeTier4 = options.includeTier4 !== false;
@@ -176,7 +176,6 @@ export function buildCoordDrafts(
   const nodes = selectCoordNodes(graph, {
     includeTier4,
     hiddenIds: options.hiddenIds,
-    excludeTrail: options.excludeTrailPlaces,
   }).slice(0, maxEntries);
   for (const node of nodes) {
     let name = `${GEO_ENTRY_PREFIX}${node.name}`;
@@ -229,7 +228,6 @@ export function buildWorldbookEntries(
     hiddenIds?: string[];
     movementRules?: string;
     narrativeRules?: string;
-    excludeTrailPlaces?: boolean;
   } = {},
 ): { drafts: CoordEntryDraft[]; entries: CoordWorldbookEntry[] } {
   const drafts = buildCoordDrafts(graph, options);
@@ -369,7 +367,6 @@ export async function syncCoordBook(
     includeTier4: boolean;
     maxEntries: number;
     hiddenIds?: string[];
-    excludeTrailPlaces?: boolean;
     movementRules?: string;
     narrativeRules?: string;
   },

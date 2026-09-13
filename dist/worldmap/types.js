@@ -194,7 +194,6 @@ export const DEFAULT_COORD_BOOK = {
     enabled: false,
     includeTier4: true,
     maxEntries: GEO_BOOK_MAX_ENTRIES,
-    excludeTrailPlaces: false,
     // 两段规则默认预填 —— 设置页打开就有文本，不需要再去文档里手动复制
     movementRules: DEFAULT_MOVEMENT_RULES,
     movementRulesEnabled: true,
