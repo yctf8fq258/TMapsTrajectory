@@ -597,16 +597,24 @@ export class MapCanvas {
             });
             halo.setAttribute('stroke-width', String(1.4 / Math.max(0.3, this.scale)));
             group.appendChild(halo);
-            // 框选多选的高亮环（加粗亮金圈，一眼能看清选了谁）
+            // 多选高亮：奶油底圈 + 朱红实线圈，双描边保证在宣纸任何位置都醒目
             if (this.multi.has(node.id)) {
+                const k = 1 / Math.max(0.3, this.scale);
                 group.appendChild(el('circle', {
                     cx: pos[0],
                     cy: pos[1],
-                    r: radius * 2,
-                    fill: 'rgba(236,217,171,.14)',
-                    stroke: '#ecd9ab',
-                    'stroke-width': 2.2 / Math.max(0.3, this.scale),
-                    'stroke-dasharray': `${5 / Math.max(0.3, this.scale)} ${3 / Math.max(0.3, this.scale)}`,
+                    r: radius * 2.1,
+                    fill: 'rgba(236,217,171,.18)',
+                    stroke: 'rgba(255,253,245,.95)',
+                    'stroke-width': 4 * k,
+                }));
+                group.appendChild(el('circle', {
+                    cx: pos[0],
+                    cy: pos[1],
+                    r: radius * 2.1,
+                    fill: 'none',
+                    stroke: '#b45a1e',
+                    'stroke-width': 2 * k,
                 }));
             }
             group.appendChild(el('circle', { cx: pos[0], cy: pos[1], r: radius * 0.72, fill: color }));
@@ -980,6 +988,9 @@ export class MapCanvas {
                 }
             }
             else if (current.mode === 'rubber') {
+                // 松手后浏览器会补发 click（在空白处）→ onSelect(null) → 清空多选。
+                // 不拦下这一下，框选结果瞬间就被清掉（"框了选不中"的真凶）。
+                this.suppressClick = true;
                 this.finishRubber();
             }
         };
