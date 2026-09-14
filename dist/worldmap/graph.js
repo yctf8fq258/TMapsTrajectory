@@ -197,6 +197,60 @@ export class MapGraph {
         return undefined;
     }
     /**
+     * 把节点（连同子树）改挂到新路径下（编辑页人工改路径）。
+     * 缺失的父链按 manual 来源补建；目标位置已被其它节点占用、或会形成环时返回 false。
+     * 成功后调用方需要重建索引（new MapGraph）并同步轨迹点/整理结果里的旧路径。
+     */
+    moveNode(id, segments) {
+        const node = this.byId.get(id);
+        if (!node || !segments.length)
+            return false;
+        const name = this.alias(segments[segments.length - 1]);
+        if (!name)
+            return false;
+        let parent = null;
+        for (const raw of segments.slice(0, -1)) {
+            const seg = this.alias(raw);
+            if (!seg)
+                continue;
+            const found = this.findChild(parent?.id ?? null, seg) ?? this.findDescendantByName(parent?.id ?? null, seg, 2);
+            let child;
+            if (found)
+                child = found;
+            else
+                child = this.create(parent, seg, parent ? `${parent.path}·${seg}` : seg, 'manual');
+            parent = child;
+        }
+        const newPath = parent ? `${parent.path}·${name}` : name;
+        if (newPath === node.path)
+            return false;
+        const occupant = this.byPath.get(newPath);
+        if (occupant && occupant.id !== id)
+            return false;
+        // 防环：新父链不能包含自己
+        for (let cursor = parent; cursor; cursor = this.get(cursor.parentId) ?? null) {
+            if (cursor.id === id)
+                return false;
+        }
+        node.parentId = parent?.id ?? null;
+        node.name = name;
+        node.path = newPath;
+        node.depth = parent ? parent.depth + 1 : 0;
+        // 子树 path/depth 按新父链重算
+        let queue = [...this.children(id)];
+        while (queue.length) {
+            const next = [];
+            for (const n of queue) {
+                const p = n.parentId ? this.byId.get(n.parentId) : undefined;
+                n.path = p ? `${p.path}·${n.name}` : n.name;
+                n.depth = p ? p.depth + 1 : 0;
+                next.push(...this.children(n.id));
+            }
+            queue = next;
+        }
+        return true;
+    }
+    /**
      * 「大周神都」= 子级「大周仙朝」+ 孙级「神都」被 AI 拼成了一段。
      * 尝试把这一段拆成两级认领到现有树上；只认领已存在的节点，绝不据此新建。
      */

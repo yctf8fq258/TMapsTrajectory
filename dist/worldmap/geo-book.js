@@ -152,6 +152,20 @@ export function buildWorldbookEntries(graph, options = {}) {
     const drafts = buildCoordDrafts(graph, options);
     return { drafts, entries: drafts.map(draftToEntry) };
 }
+/** IO 保险丝：JSR 世界书接口在编辑器占用等情况下可能永远不返回 ——
+ *  挂 30 秒超时按失败处理，busy 才能解除（实测踩坑：卡在「正在删除…」只能刷新酒馆）。 */
+function ioFuse(label, promise, ms = 30000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`${label}超过 ${Math.round(ms / 1000)}s 没有响应（世界书接口被占用或未返回）。请关掉世界书编辑器后重试。`)), ms);
+        promise.then(value => {
+            clearTimeout(timer);
+            resolve(value);
+        }, error => {
+            clearTimeout(timer);
+            reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+}
 /** 已有书里的条目（取我们关心的字段）与草稿逐条比对；完全一致才允许跳过写入 */
 export function entriesDiffer(existing, drafts) {
     if (existing.length !== drafts.length)
@@ -276,13 +290,13 @@ export async function syncCoordBook(graph, options) {
     const { drafts, entries } = buildWorldbookEntries(graph, options);
     let existing = null;
     try {
-        existing = (await getWorldbook(WORLDMAP_BOOK));
+        existing = (await ioFuse('读取世界书', getWorldbook(WORLDMAP_BOOK)));
     }
     catch {
         existing = null;
     }
     if (!existing || !existing.length) {
-        const created = await createWorldbook(WORLDMAP_BOOK, entries);
+        const created = await ioFuse('创建世界书', createWorldbook(WORLDMAP_BOOK, entries));
         if (!created) {
             return { status: 'failed', entryCount: 0, message: `创建「${WORLDMAP_BOOK}」失败（同名书可能刚被别人建出，刷新后再试）` };
         }
@@ -304,7 +318,7 @@ export async function syncCoordBook(graph, options) {
     if (!entriesDiffer(existing, drafts)) {
         return { status: 'unchanged', entryCount: existing.length, message: `内容未变化，跳过写入（${existing.length} 条）` };
     }
-    await replaceWorldbook(WORLDMAP_BOOK, entries);
+    await ioFuse('写入世界书', replaceWorldbook(WORLDMAP_BOOK, entries));
     reloadWorldbookEditor();
     return { status: 'synced', entryCount: entries.length, message: `已同步 ${entries.length} 条进「${WORLDMAP_BOOK}」` };
 }
@@ -336,7 +350,7 @@ export async function attachCoordBook() {
     const current = getCharWorldbookNames('current');
     const primary = current.primary ?? null;
     const additional = [...new Set([...(current.additional ?? []), WORLDMAP_BOOK])].filter(name => name && name !== primary);
-    await rebindCharWorldbooks('current', { primary, additional });
+    await ioFuse('重绑角色世界书绑定', rebindCharWorldbooks('current', { primary, additional }));
     const back = getCharWorldbookNames('current');
     const missing = additional.filter(name => !(back.additional ?? []).includes(name));
     if ((back.primary ?? null) !== primary || missing.length) {
@@ -351,7 +365,7 @@ export async function detachCoordBook() {
         throw new Error(`「${WORLDMAP_BOOK}」是当前主世界书，不能自动卸载`);
     }
     const additional = (current.additional ?? []).filter(name => name !== WORLDMAP_BOOK);
-    await rebindCharWorldbooks('current', { primary, additional });
+    await ioFuse('重绑角色世界书绑定', rebindCharWorldbooks('current', { primary, additional }));
     const back = getCharWorldbookNames('current');
     const lingering = (back.additional ?? []).filter(name => name === WORLDMAP_BOOK);
     if ((back.primary ?? null) !== primary || lingering.length) {
@@ -361,12 +375,12 @@ export async function detachCoordBook() {
 /** 删除坐标书：先尝试解绑（没挂载/缺接口都继续），再删书。两步确认在 UI 层做。 */
 export async function deleteCoordBook() {
     try {
-        await detachCoordBook();
+        await ioFuse('解除绑定', detachCoordBook());
     }
     catch {
         /* 没挂载或缺绑定接口时直接删书 */
     }
-    const ok = await deleteWorldbook(WORLDMAP_BOOK);
+    const ok = await ioFuse('删除世界书', deleteWorldbook(WORLDMAP_BOOK));
     if (!ok)
         throw new Error(`删除「${WORLDMAP_BOOK}」失败（书可能不存在）`);
     return `已删除「${WORLDMAP_BOOK}」（绑定已一并解除）`;

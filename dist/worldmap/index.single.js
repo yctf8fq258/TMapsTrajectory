@@ -697,6 +697,60 @@ class MapGraph {
         return undefined;
     }
     /**
+     * 把节点（连同子树）改挂到新路径下（编辑页人工改路径）。
+     * 缺失的父链按 manual 来源补建；目标位置已被其它节点占用、或会形成环时返回 false。
+     * 成功后调用方需要重建索引（new MapGraph）并同步轨迹点/整理结果里的旧路径。
+     */
+    moveNode(id, segments) {
+        const node = this.byId.get(id);
+        if (!node || !segments.length)
+            return false;
+        const name = this.alias(segments[segments.length - 1]);
+        if (!name)
+            return false;
+        let parent = null;
+        for (const raw of segments.slice(0, -1)) {
+            const seg = this.alias(raw);
+            if (!seg)
+                continue;
+            const found = this.findChild(parent?.id ?? null, seg) ?? this.findDescendantByName(parent?.id ?? null, seg, 2);
+            let child;
+            if (found)
+                child = found;
+            else
+                child = this.create(parent, seg, parent ? `${parent.path}·${seg}` : seg, 'manual');
+            parent = child;
+        }
+        const newPath = parent ? `${parent.path}·${name}` : name;
+        if (newPath === node.path)
+            return false;
+        const occupant = this.byPath.get(newPath);
+        if (occupant && occupant.id !== id)
+            return false;
+        // 防环：新父链不能包含自己
+        for (let cursor = parent; cursor; cursor = this.get(cursor.parentId) ?? null) {
+            if (cursor.id === id)
+                return false;
+        }
+        node.parentId = parent?.id ?? null;
+        node.name = name;
+        node.path = newPath;
+        node.depth = parent ? parent.depth + 1 : 0;
+        // 子树 path/depth 按新父链重算
+        let queue = [...this.children(id)];
+        while (queue.length) {
+            const next = [];
+            for (const n of queue) {
+                const p = n.parentId ? this.byId.get(n.parentId) : undefined;
+                n.path = p ? `${p.path}·${n.name}` : n.name;
+                n.depth = p ? p.depth + 1 : 0;
+                next.push(...this.children(n.id));
+            }
+            queue = next;
+        }
+        return true;
+    }
+    /**
      * 「大周神都」= 子级「大周仙朝」+ 孙级「神都」被 AI 拼成了一段。
      * 尝试把这一段拆成两级认领到现有树上；只认领已存在的节点，绝不据此新建。
      */
@@ -2563,6 +2617,20 @@ function buildWorldbookEntries(graph, options = {}) {
     const drafts = buildCoordDrafts(graph, options);
     return { drafts, entries: drafts.map(draftToEntry) };
 }
+/** IO 保险丝：JSR 世界书接口在编辑器占用等情况下可能永远不返回 ——
+ *  挂 30 秒超时按失败处理，busy 才能解除（实测踩坑：卡在「正在删除…」只能刷新酒馆）。 */
+function ioFuse(label, promise, ms = 30000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`${label}超过 ${Math.round(ms / 1000)}s 没有响应（世界书接口被占用或未返回）。请关掉世界书编辑器后重试。`)), ms);
+        promise.then(value => {
+            clearTimeout(timer);
+            resolve(value);
+        }, error => {
+            clearTimeout(timer);
+            reject(error instanceof Error ? error : new Error(String(error)));
+        });
+    });
+}
 /** 已有书里的条目（取我们关心的字段）与草稿逐条比对；完全一致才允许跳过写入 */
 function entriesDiffer(existing, drafts) {
     if (existing.length !== drafts.length)
@@ -2687,13 +2755,13 @@ async function syncCoordBook(graph, options) {
     const { drafts, entries } = buildWorldbookEntries(graph, options);
     let existing = null;
     try {
-        existing = (await getWorldbook(WORLDMAP_BOOK));
+        existing = (await ioFuse('读取世界书', getWorldbook(WORLDMAP_BOOK)));
     }
     catch {
         existing = null;
     }
     if (!existing || !existing.length) {
-        const created = await createWorldbook(WORLDMAP_BOOK, entries);
+        const created = await ioFuse('创建世界书', createWorldbook(WORLDMAP_BOOK, entries));
         if (!created) {
             return { status: 'failed', entryCount: 0, message: `创建「${WORLDMAP_BOOK}」失败（同名书可能刚被别人建出，刷新后再试）` };
         }
@@ -2715,7 +2783,7 @@ async function syncCoordBook(graph, options) {
     if (!entriesDiffer(existing, drafts)) {
         return { status: 'unchanged', entryCount: existing.length, message: `内容未变化，跳过写入（${existing.length} 条）` };
     }
-    await replaceWorldbook(WORLDMAP_BOOK, entries);
+    await ioFuse('写入世界书', replaceWorldbook(WORLDMAP_BOOK, entries));
     reloadWorldbookEditor();
     return { status: 'synced', entryCount: entries.length, message: `已同步 ${entries.length} 条进「${WORLDMAP_BOOK}」` };
 }
@@ -2747,7 +2815,7 @@ async function attachCoordBook() {
     const current = getCharWorldbookNames('current');
     const primary = current.primary ?? null;
     const additional = [...new Set([...(current.additional ?? []), WORLDMAP_BOOK])].filter(name => name && name !== primary);
-    await rebindCharWorldbooks('current', { primary, additional });
+    await ioFuse('重绑角色世界书绑定', rebindCharWorldbooks('current', { primary, additional }));
     const back = getCharWorldbookNames('current');
     const missing = additional.filter(name => !(back.additional ?? []).includes(name));
     if ((back.primary ?? null) !== primary || missing.length) {
@@ -2762,7 +2830,7 @@ async function detachCoordBook() {
         throw new Error(`「${WORLDMAP_BOOK}」是当前主世界书，不能自动卸载`);
     }
     const additional = (current.additional ?? []).filter(name => name !== WORLDMAP_BOOK);
-    await rebindCharWorldbooks('current', { primary, additional });
+    await ioFuse('重绑角色世界书绑定', rebindCharWorldbooks('current', { primary, additional }));
     const back = getCharWorldbookNames('current');
     const lingering = (back.additional ?? []).filter(name => name === WORLDMAP_BOOK);
     if ((back.primary ?? null) !== primary || lingering.length) {
@@ -2772,12 +2840,12 @@ async function detachCoordBook() {
 /** 删除坐标书：先尝试解绑（没挂载/缺接口都继续），再删书。两步确认在 UI 层做。 */
 async function deleteCoordBook() {
     try {
-        await detachCoordBook();
+        await ioFuse('解除绑定', detachCoordBook());
     }
     catch {
         /* 没挂载或缺绑定接口时直接删书 */
     }
-    const ok = await deleteWorldbook(WORLDMAP_BOOK);
+    const ok = await ioFuse('删除世界书', deleteWorldbook(WORLDMAP_BOOK));
     if (!ok)
         throw new Error(`删除「${WORLDMAP_BOOK}」失败（书可能不存在）`);
     return `已删除「${WORLDMAP_BOOK}」（绑定已一并解除）`;
@@ -4745,6 +4813,7 @@ class MapWindow {
     statusBar;
     searchInput;
     fileInput;
+    lastPathListFor;
     data;
     /**
      * 宿主窗口（酒馆主页面）。
@@ -4918,6 +4987,19 @@ class MapWindow {
         <div class="dym-sect">选中节点</div>
         <div class="dym-hint" data-role="selected-info">未选中节点。</div>
         <div class="dym-field"><label>名称</label><input type="text" data-role="node-name"></div>
+        <div class="dym-field dym-col"><label>路径（· 分隔的层级；改名/改挂层级，可自由输入）</label>
+          <input type="text" data-role="node-path" list="worldmap-path-list" placeholder="中央神州·大周仙朝·神都·…">
+          <datalist id="worldmap-path-list"></datalist>
+        </div>
+        <div class="dym-field"><label>来源</label>
+          <select data-role="node-source">
+            <option value="trail">trail · 轨迹层（跟聊天走，不进坐标书）</option>
+            <option value="manual">manual · 手动新建（底图层，进坐标书）</option>
+            <option value="ai">ai · AI 铺点（底图层，进坐标书）</option>
+            <option value="seed">seed · 内置骨架（底图层）</option>
+            <option value="preset">preset · 作者预设（底图层）</option>
+          </select>
+        </div>
         <div class="dym-field"><label>X</label><input type="number" step="0.1" data-role="node-x"></div>
         <div class="dym-field"><label>Y</label><input type="number" step="0.1" data-role="node-y"></div>
         <div class="dym-field"><label>显示层级</label>
@@ -5023,6 +5105,19 @@ class MapWindow {
         edit.querySelector('[data-role=node-name]')?.addEventListener('change', event => {
             if (this.data.selectedId)
                 this.actions.onRenameNode(this.data.selectedId, event.target.value);
+        });
+        // 路径编辑：改挂层级（回车/失焦生效）
+        const pathInput = edit.querySelector('[data-role=node-path]');
+        pathInput?.addEventListener('change', () => {
+            if (this.data.selectedId)
+                this.actions.onSetNodePath(this.data.selectedId, pathInput.value);
+        });
+        // 来源编辑：跨层移动（trail ↔ 底图层）
+        const sourceSelect = edit.querySelector('[data-role=node-source]');
+        sourceSelect?.addEventListener('change', event => {
+            if (this.data.selectedId) {
+                this.actions.onSetNodeSource(this.data.selectedId, event.target.value);
+            }
         });
         // ── 轨迹 ──
         const trail = this.panes.get('trail');
@@ -5901,6 +5996,32 @@ class MapWindow {
         if (tierSelect && document.activeElement !== tierSelect)
             tierSelect.value = selected?.tier ? String(selected.tier) : '';
         tierSelect.disabled = !selected;
+        // 路径 / 来源回填（焦点在输入上时不打断输入）
+        const pathInput = edit.querySelector('[data-role=node-path]');
+        const sourceSelect = edit.querySelector('[data-role=node-source]');
+        if (pathInput && document.activeElement !== pathInput)
+            pathInput.value = selected?.path ?? '';
+        if (pathInput)
+            pathInput.disabled = !selected;
+        if (sourceSelect && document.activeElement !== sourceSelect)
+            sourceSelect.value = selected?.source ?? 'trail';
+        if (sourceSelect)
+            sourceSelect.disabled = !selected;
+        // 路径建议列表：选中节点变化时重建一次
+        if (this.lastPathListFor !== this.data.selectedId) {
+            this.lastPathListFor = this.data.selectedId;
+            const list = edit.querySelector('#worldmap-path-list');
+            if (list) {
+                list.innerHTML = this.data.canvas
+                    .getView()
+                    .graph.toArray()
+                    .map(node => node.path)
+                    .sort()
+                    .slice(0, 400)
+                    .map(path => `<option value="${escapeHtml(path)}">`)
+                    .join('');
+            }
+        }
         const editToggle = edit.querySelector('[data-role=edit-mode]');
         editToggle.checked = this.data.editMode;
         // 固定位置按钮：跟随选中点的状态
@@ -6614,6 +6735,71 @@ const actions = {
         render();
         toast('info', node.pinned ? '已固定位置：框选与批量拖动会跳过它' : '已取消固定');
     },
+    /** 人工改来源：trail ↔ manual/ai…（跨层持久化按 source 自动劈分） */
+    onSetNodeSource(id, source) {
+        const node = graph.get(id);
+        if (!node || node.source === source)
+            return;
+        pushUndo();
+        node.source = source;
+        if (source !== 'trail' && node.status === 'unplaced')
+            node.status = 'ok';
+        persistBaseMap();
+        persistTrail();
+        render();
+        toast('info', `来源已改为 ${source}${source === 'trail' ? '（聊天层，不进坐标书）' : '（底图层，可进坐标书）'}`);
+    },
+    /** 人工改路径：节点连同子树改挂到新层级下；轨迹点/整理结果里的旧路径一并同步 */
+    onSetNodePath(id, path) {
+        const node = graph.get(id);
+        if (!node)
+            return;
+        const segments = path.split('·').map(part => part.trim()).filter(Boolean);
+        if (!segments.length) {
+            toast('error', '路径不能为空');
+            return;
+        }
+        if (segments.join('·') === node.path)
+            return;
+        const oldPath = node.path;
+        pushUndo();
+        if (!graph.moveNode(id, segments)) {
+            undoStack.pop();
+            toast('error', '改路径失败：目标位置已被其它节点占用，或会形成环路');
+            render();
+            return;
+        }
+        graph = new MapGraph(graph.toArray()); // 重建 byPath/byName/childIndex 索引
+        // 子树内的轨迹点与整理结果同步新路径
+        const subtree = new Set([id, ...graph.descendants(id).map(item => item.id)]);
+        let fixed = 0;
+        for (const point of trail.points) {
+            if (!subtree.has(point.nodeId))
+                continue;
+            point.path = graph.get(point.nodeId)?.path ?? point.path;
+            fixed++;
+        }
+        if (trail.pathFixes) {
+            for (const fix of Object.values(trail.pathFixes)) {
+                if (fix.path === oldPath) {
+                    fix.path = node.path;
+                    fixed++;
+                }
+                else if (fix.path.startsWith(oldPath + '·')) {
+                    fix.path = node.path + fix.path.slice(oldPath.length);
+                    fixed++;
+                }
+            }
+        }
+        if (currentPath && currentPath.startsWith(oldPath)) {
+            currentPath = node.path + currentPath.slice(oldPath.length);
+        }
+        syncSelection();
+        persistBaseMap();
+        persistTrail();
+        render();
+        toast('success', `路径已改为「${node.path}」${fixed ? `（同步 ${fixed} 条轨迹记录）` : ''}`);
+    },
     onRenameNode(id, name) {
         const node = graph.get(id);
         const trimmed = name.trim();
@@ -6922,8 +7108,9 @@ const actions = {
     },
     /** 生成并挂载坐标世界书（用户显式点击 = 显式授权动绑定） */
     async onMountCoordBook() {
-        if (busy)
+        if (busy || geoBookBusy)
             return;
+        geoBookBusy = true;
         busy = '正在生成并挂载坐标世界书…';
         render();
         try {
@@ -6952,14 +7139,20 @@ const actions = {
             geoStatus = `${describeGeoMount()}｜挂载失败`;
             toast('error', `挂载坐标世界书失败：${message}`);
             mapWindow?.showGeoResult(`【挂载坐标世界书】失败\n${message}\n`);
+        }
+        finally {
+            // 成功/失败都必须复位 —— 只在 catch 里复位的话，操作一旦成功 busy 就永远挂着，
+            // 后续所有地理操作被守卫拦死，只能刷新酒馆（实测踩坑）
+            geoBookBusy = false;
             busy = null;
             render();
         }
     },
     /** 修复挂载（重新挂）：不碰书内容，只把绑定重写一遍并读回校验 —— 书已同步却显示「未挂载」时点它 */
     async onRemountCoordBook() {
-        if (busy)
+        if (busy || geoBookBusy)
             return;
+        geoBookBusy = true;
         busy = '正在修复挂载…';
         render();
         try {
@@ -6980,6 +7173,9 @@ const actions = {
             geoStatus = `${describeGeoMount()}｜修复挂载失败`;
             toast('error', `修复挂载失败：${message}`);
             mapWindow?.showGeoResult(`【修复挂载】失败\n${message}\n`);
+        }
+        finally {
+            geoBookBusy = false;
             busy = null;
             render();
         }
@@ -6998,8 +7194,9 @@ const actions = {
     },
     /** 删除 = 解绑 + 删书（两步确认在设置页按钮上） */
     async onDeleteCoordBook() {
-        if (busy)
+        if (busy || geoBookBusy)
             return;
+        geoBookBusy = true;
         busy = '正在删除坐标世界书…';
         render();
         try {
@@ -7012,6 +7209,9 @@ const actions = {
             const message = String(error instanceof Error ? error.message : error);
             toast('error', `删除失败：${message}`);
             mapWindow?.showGeoResult(`【删除坐标世界书】失败\n${message}\n`);
+        }
+        finally {
+            geoBookBusy = false;
             busy = null;
             render();
         }

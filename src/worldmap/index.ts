@@ -6,7 +6,7 @@
  *   · 但裸 `document` 是本 iframe 的文档，界面必须建在 `window.parent.document` 上；
  *   · 卸载要自己清理 DOM —— 见 $(window).on('pagehide', …)。
  */
-import type { BaseMap, MapNode, MapSettings, Trail, TrailPoint, Vec2 } from './types.js';
+import type { BaseMap, MapNode, MapSettings, NodeSource, Trail, TrailPoint, Vec2 } from './types.js';
 import { GEO_INJECT_ID, ID_PREFIX, KEY_BASE_MAP, KEY_TRAIL, migrateBaseMap } from './types.js';
 import { MapGraph, sanitizeNodes, tierOf, toBaseMap } from './graph.js';
 import { rebuildTrail, collectRawLocations } from './trail.js';
@@ -603,6 +603,65 @@ const actions = {
     render();
     toast('info', node.pinned ? '已固定位置：框选与批量拖动会跳过它' : '已取消固定');
   },
+  /** 人工改来源：trail ↔ manual/ai…（跨层持久化按 source 自动劈分） */
+  onSetNodeSource(id: string, source: NodeSource) {
+    const node = graph.get(id);
+    if (!node || node.source === source) return;
+    pushUndo();
+    node.source = source;
+    if (source !== 'trail' && node.status === 'unplaced') node.status = 'ok';
+    persistBaseMap();
+    persistTrail();
+    render();
+    toast('info', `来源已改为 ${source}${source === 'trail' ? '（聊天层，不进坐标书）' : '（底图层，可进坐标书）'}`);
+  },
+  /** 人工改路径：节点连同子树改挂到新层级下；轨迹点/整理结果里的旧路径一并同步 */
+  onSetNodePath(id: string, path: string) {
+    const node = graph.get(id);
+    if (!node) return;
+    const segments = path.split('·').map(part => part.trim()).filter(Boolean);
+    if (!segments.length) {
+      toast('error', '路径不能为空');
+      return;
+    }
+    if (segments.join('·') === node.path) return;
+    const oldPath = node.path;
+    pushUndo();
+    if (!graph.moveNode(id, segments)) {
+      undoStack.pop();
+      toast('error', '改路径失败：目标位置已被其它节点占用，或会形成环路');
+      render();
+      return;
+    }
+    graph = new MapGraph(graph.toArray()); // 重建 byPath/byName/childIndex 索引
+    // 子树内的轨迹点与整理结果同步新路径
+    const subtree = new Set<string>([id, ...graph.descendants(id).map(item => item.id)]);
+    let fixed = 0;
+    for (const point of trail.points) {
+      if (!subtree.has(point.nodeId)) continue;
+      point.path = graph.get(point.nodeId)?.path ?? point.path;
+      fixed++;
+    }
+    if (trail.pathFixes) {
+      for (const fix of Object.values(trail.pathFixes)) {
+        if (fix.path === oldPath) {
+          fix.path = node.path;
+          fixed++;
+        } else if (fix.path.startsWith(oldPath + '·')) {
+          fix.path = node.path + fix.path.slice(oldPath.length);
+          fixed++;
+        }
+      }
+    }
+    if (currentPath && currentPath.startsWith(oldPath)) {
+      currentPath = node.path + currentPath.slice(oldPath.length);
+    }
+    syncSelection();
+    persistBaseMap();
+    persistTrail();
+    render();
+    toast('success', `路径已改为「${node.path}」${fixed ? `（同步 ${fixed} 条轨迹记录）` : ''}`);
+  },
 
   onRenameNode(id: string, name: string) {
     const node = graph.get(id);
@@ -896,7 +955,8 @@ const actions = {
   },
   /** 生成并挂载坐标世界书（用户显式点击 = 显式授权动绑定） */
   async onMountCoordBook() {
-    if (busy) return;
+    if (busy || geoBookBusy) return;
+    geoBookBusy = true;
     busy = '正在生成并挂载坐标世界书…';
     render();
     try {
@@ -924,13 +984,18 @@ const actions = {
       geoStatus = `${describeGeoMount()}｜挂载失败`;
       toast('error', `挂载坐标世界书失败：${message}`);
       mapWindow?.showGeoResult(`【挂载坐标世界书】失败\n${message}\n`);
+    } finally {
+      // 成功/失败都必须复位 —— 只在 catch 里复位的话，操作一旦成功 busy 就永远挂着，
+      // 后续所有地理操作被守卫拦死，只能刷新酒馆（实测踩坑）
+      geoBookBusy = false;
       busy = null;
       render();
     }
   },
   /** 修复挂载（重新挂）：不碰书内容，只把绑定重写一遍并读回校验 —— 书已同步却显示「未挂载」时点它 */
   async onRemountCoordBook() {
-    if (busy) return;
+    if (busy || geoBookBusy) return;
+    geoBookBusy = true;
     busy = '正在修复挂载…';
     render();
     try {
@@ -950,6 +1015,8 @@ const actions = {
       geoStatus = `${describeGeoMount()}｜修复挂载失败`;
       toast('error', `修复挂载失败：${message}`);
       mapWindow?.showGeoResult(`【修复挂载】失败\n${message}\n`);
+    } finally {
+      geoBookBusy = false;
       busy = null;
       render();
     }
@@ -968,7 +1035,8 @@ const actions = {
   },
   /** 删除 = 解绑 + 删书（两步确认在设置页按钮上） */
   async onDeleteCoordBook() {
-    if (busy) return;
+    if (busy || geoBookBusy) return;
+    geoBookBusy = true;
     busy = '正在删除坐标世界书…';
     render();
     try {
@@ -980,6 +1048,8 @@ const actions = {
       const message = String(error instanceof Error ? error.message : error);
       toast('error', `删除失败：${message}`);
       mapWindow?.showGeoResult(`【删除坐标世界书】失败\n${message}\n`);
+    } finally {
+      geoBookBusy = false;
       busy = null;
       render();
     }

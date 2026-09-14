@@ -3,7 +3,7 @@
  * 交互范式照角色卡卡里已有的「世界舆图 MVU 悬浮状态栏」：固定定位、拖标题栏、右下角缩放、
  * 贴边停靠、关闭后由快捷回复栏按钮重开、布局写 localStorage、pagehide 自清理。
  */
-import type { BaseMap, DrawerTab, LayoutState, MapNode, MapSettings, TrailPoint, Vec2 } from '../types.js';
+import type { BaseMap, DrawerTab, LayoutState, MapNode, MapSettings, NodeSource, TrailPoint, Vec2 } from '../types.js';
 import { ID_PREFIX } from '../types.js';
 import type { MapCanvas } from './canvas.js';
 import { COMPASS, KIND_COLORS, KIND_LABELS, UI, escapeHtml, ensureStyle, svgIcon } from './theme.js';
@@ -20,6 +20,10 @@ export interface WindowActions {
   onRedo: () => void;
   onMoveSelected: (xy: [number, number]) => void;
   onRenameNode: (id: string, name: string) => void;
+  /** 人工改来源（trail ↔ manual/ai/…，跨层） */
+  onSetNodeSource: (id: string, source: NodeSource) => void;
+  /** 人工改路径（节点连同子树改挂层级） */
+  onSetNodePath: (id: string, path: string) => void;
   onDeleteNode: (id: string) => void;
   onAddChild: (id: string | null, name: string, at?: Vec2) => void;
   onToggleLock: (id: string) => void;
@@ -114,6 +118,7 @@ export class MapWindow {
   private statusBar!: HTMLElement;
   private searchInput!: HTMLInputElement;
   private fileInput!: HTMLInputElement;
+  private lastPathListFor?: string | null;
   private data: WindowData;
   /**
    * 宿主窗口（酒馆主页面）。
@@ -297,6 +302,19 @@ export class MapWindow {
         <div class="dym-sect">选中节点</div>
         <div class="dym-hint" data-role="selected-info">未选中节点。</div>
         <div class="dym-field"><label>名称</label><input type="text" data-role="node-name"></div>
+        <div class="dym-field dym-col"><label>路径（· 分隔的层级；改名/改挂层级，可自由输入）</label>
+          <input type="text" data-role="node-path" list="worldmap-path-list" placeholder="中央神州·大周仙朝·神都·…">
+          <datalist id="worldmap-path-list"></datalist>
+        </div>
+        <div class="dym-field"><label>来源</label>
+          <select data-role="node-source">
+            <option value="trail">trail · 轨迹层（跟聊天走，不进坐标书）</option>
+            <option value="manual">manual · 手动新建（底图层，进坐标书）</option>
+            <option value="ai">ai · AI 铺点（底图层，进坐标书）</option>
+            <option value="seed">seed · 内置骨架（底图层）</option>
+            <option value="preset">preset · 作者预设（底图层）</option>
+          </select>
+        </div>
         <div class="dym-field"><label>X</label><input type="number" step="0.1" data-role="node-x"></div>
         <div class="dym-field"><label>Y</label><input type="number" step="0.1" data-role="node-y"></div>
         <div class="dym-field"><label>显示层级</label>
@@ -396,6 +414,18 @@ export class MapWindow {
     });
     (edit.querySelector('[data-role=node-name]') as HTMLInputElement | null)?.addEventListener('change', event => {
       if (this.data.selectedId) this.actions.onRenameNode(this.data.selectedId, (event.target as HTMLInputElement).value);
+    });
+    // 路径编辑：改挂层级（回车/失焦生效）
+    const pathInput = edit.querySelector('[data-role=node-path]') as HTMLInputElement | null;
+    pathInput?.addEventListener('change', () => {
+      if (this.data.selectedId) this.actions.onSetNodePath(this.data.selectedId, pathInput.value);
+    });
+    // 来源编辑：跨层移动（trail ↔ 底图层）
+    const sourceSelect = edit.querySelector('[data-role=node-source]') as HTMLSelectElement | null;
+    sourceSelect?.addEventListener('change', event => {
+      if (this.data.selectedId) {
+        this.actions.onSetNodeSource(this.data.selectedId, (event.target as HTMLSelectElement).value as NodeSource);
+      }
     });
 
     // ── 轨迹 ──
@@ -1274,6 +1304,28 @@ export class MapWindow {
     if (document.activeElement !== yInput) yInput.value = selected ? String(selected.xy[1]) : '';
     if (tierSelect && document.activeElement !== tierSelect) tierSelect.value = selected?.tier ? String(selected.tier) : '';
     tierSelect.disabled = !selected;
+    // 路径 / 来源回填（焦点在输入上时不打断输入）
+    const pathInput = edit.querySelector('[data-role=node-path]') as HTMLInputElement | null;
+    const sourceSelect = edit.querySelector('[data-role=node-source]') as HTMLSelectElement | null;
+    if (pathInput && document.activeElement !== pathInput) pathInput.value = selected?.path ?? '';
+    if (pathInput) pathInput.disabled = !selected;
+    if (sourceSelect && document.activeElement !== sourceSelect) sourceSelect.value = selected?.source ?? 'trail';
+    if (sourceSelect) sourceSelect.disabled = !selected;
+    // 路径建议列表：选中节点变化时重建一次
+    if (this.lastPathListFor !== this.data.selectedId) {
+      this.lastPathListFor = this.data.selectedId;
+      const list = edit.querySelector('#worldmap-path-list');
+      if (list) {
+        list.innerHTML = this.data.canvas
+          .getView()
+          .graph.toArray()
+          .map(node => node.path)
+          .sort()
+          .slice(0, 400)
+          .map(path => `<option value="${escapeHtml(path)}">`)
+          .join('');
+      }
+    }
     const editToggle = edit.querySelector('[data-role=edit-mode]') as HTMLInputElement;
     editToggle.checked = this.data.editMode;
     // 固定位置按钮：跟随选中点的状态
